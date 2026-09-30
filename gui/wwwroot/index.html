@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Usage Report — Deploy</title>
+<link rel="stylesheet" href="styles.css?v=2">
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Token Usage Report</h1>
+    <p>Sign in, pick a subscription and resource group, then deploy the daily CSV report app to Azure.</p>
+  </header>
+
+  <div class="steps" id="stepsBar">
+    <span id="stepDot1" class="active">1. Sign in</span>
+    <span id="stepDot2">2. Subscription</span>
+    <span id="stepDot3">3. Resource group</span>
+    <span id="stepDot4">4. Configure &amp; deploy</span>
+  </div>
+
+  <!-- Landing (shown when a previous deployment is remembered) -->
+  <section class="panel hidden" id="landing">
+    <h2>Welcome back</h2>
+    <p class="sub">A previous deployment was found on this machine. Jump straight to your reports, or start a new setup.</p>
+    <div id="landingSummary" class="summary"></div>
+    <div class="footer" style="margin-top:24px">
+      <button id="btnLandingViewer" class="primary">View reports →</button>
+      <button id="btnLandingSetup" class="secondary">New setup / change sign-in</button>
+    </div>
+  </section>
+
+  <!-- Step 1: Sign in -->
+  <section class="panel" id="step1">
+    <h2>Sign in to Azure</h2>
+    <p class="sub">Uses the Azure CLI on this machine. A browser window opens for you to authenticate.</p>
+    <div id="prereq" class="status info">Checking Azure CLI…</div>
+
+    <label for="tenant">Tenant ID (optional)</label>
+    <input type="text" id="tenant" placeholder="Leave blank for your default tenant">
+    <p class="hint">Click <strong>Sign in with browser</strong> to sign in or switch accounts — you'll pick the account in the pop-up. Only set a tenant to target a specific directory.</p>
+
+    <div class="footer">
+      <div>
+        <button id="btnLogin">Sign in with browser</button>
+        <button id="btnDeviceCode" class="secondary">Use device code</button>
+      </div>
+      <button id="btnSignedInNext" class="primary" disabled>Next →</button>
+    </div>
+    <div id="loginStatus" class="status"></div>
+  </section>
+
+  <!-- Step 2: Subscription -->
+  <section class="panel hidden" id="step2">
+    <h2>Choose a subscription</h2>
+    <p class="sub">Resources will be created in the selected subscription.</p>
+    <label for="subscription">Subscription</label>
+    <select id="subscription"></select>
+    <div class="footer">
+      <button class="secondary" data-back="1">← Back</button>
+      <button id="btnSubNext" class="primary">Next →</button>
+    </div>
+    <div id="subStatus" class="status"></div>
+  </section>
+
+  <!-- Step 3: Resource group -->
+  <section class="panel hidden" id="step3">
+    <h2>Resource group</h2>
+    <p class="sub">Pick an existing resource group or create a new one for the report app.</p>
+
+    <div class="radio" data-rg-mode="existing">
+      <input type="radio" name="rgMode" id="rgExisting" value="existing" checked>
+      <label for="rgExisting" style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Use existing</label>
+    </div>
+    <select id="resourceGroup"></select>
+
+    <div class="radio" data-rg-mode="new" style="margin-top:16px">
+      <input type="radio" name="rgMode" id="rgNew" value="new">
+      <label for="rgNew" style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Create new</label>
+    </div>
+    <div id="rgNewFields" class="hidden">
+      <label for="rgNewName">New resource group name</label>
+      <input type="text" id="rgNewName" placeholder="tokrpt-rg">
+      <label for="rgLocation">Location</label>
+      <select id="rgLocation"></select>
+    </div>
+
+    <div class="footer">
+      <button class="secondary" data-back="2">← Back</button>
+      <button id="btnRgNext" class="primary">Next →</button>
+    </div>
+    <div id="rgStatus" class="status"></div>
+  </section>
+
+  <!-- Step 4: Configure & deploy -->
+  <section class="panel hidden" id="step4">
+    <h2>Configure &amp; deploy</h2>
+    <p class="sub">These map directly to the deployment script parameters.</p>
+
+    <label for="appInsights">Application Insights component</label>
+    <select id="appInsights"></select>
+    <p class="hint">The component already receiving your APIM token metrics.</p>
+
+    <div class="grid2">
+      <div>
+        <label for="location">Location</label>
+        <select id="location"></select>
+      </div>
+      <div>
+        <label for="baseName">Base name</label>
+        <input type="text" id="baseName" value="tokrpt">
+      </div>
+    </div>
+
+    <label>App Service plan <span class="muted">(hosts the app)</span></label>
+    <div class="picker">
+      <label class="radioline"><input type="radio" name="planMode" value="existing" checked> Use existing</label>
+      <select id="planExisting"></select>
+      <label class="radioline"><input type="radio" name="planMode" value="new"> Create new</label>
+      <div id="planNewFields" class="hidden grid2">
+        <input type="text" id="planNew" placeholder="Leave blank to auto-name (tokrpt-plan)">
+        <select id="planSku">
+          <option value="B1" selected>B1 (Basic)</option>
+          <option value="B2">B2 (Basic)</option>
+          <option value="S1">S1 (Standard)</option>
+          <option value="F1">F1 (Free)</option>
+        </select>
+      </div>
+    </div>
+
+    <label>Web App <span class="muted">(generates &amp; serves the report)</span></label>
+    <div class="picker">
+      <label class="radioline"><input type="radio" name="appMode" value="existing"> Use existing</label>
+      <select id="appExisting"></select>
+      <label class="radioline"><input type="radio" name="appMode" value="new" checked> Create new</label>
+      <input type="text" id="appNew" placeholder="Leave blank to auto-name (tokrpt-app-…)">
+    </div>
+
+    <label for="lookback">Lookback hours <span class="muted">(default report window)</span></label>
+    <input type="text" id="lookback" value="24">
+
+    <label class="checkbox">
+      <input type="checkbox" id="runNow" checked>
+      Run the report once immediately after deploy
+    </label>
+
+    <div class="footer">
+      <button class="secondary" data-back="3">← Back</button>
+      <button id="btnDeploy" class="primary">Deploy to Azure</button>
+    </div>
+    <div id="deployStatus" class="status"></div>
+    <pre id="log" class="hidden"></pre>
+
+    <div id="viewerLaunch" style="margin-top:20px">
+      <button id="btnOpenViewer" class="secondary">View reports →</button>
+    </div>
+  </section>
+
+  <!-- Report viewer -->
+  <section class="panel hidden" id="viewer">
+    <h2>CSV report viewer</h2>
+    <p class="sub">Reports are generated by the deployed app from Application Insights (using its managed identity) and served to this portal through the app's secured API — no storage account, no direct blob access.</p>
+
+    <div id="viewerAppInfo" class="summary" style="margin-bottom:16px"></div>
+
+    <div class="footer" style="margin-top:16px">
+      <div>
+        <button id="btnRunReport" class="primary">Run report now</button>
+        <button id="btnListBlobs" class="secondary">Refresh list</button>
+        <button id="btnSample" class="secondary">Show sample report</button>
+      </div>
+      <button class="secondary" id="btnViewerBack">← Back</button>
+    </div>
+
+    <div id="viewerStatus" class="status"></div>
+
+    <label for="blobSelect" id="blobSelectLabel" class="hidden">Report file</label>
+    <div id="blobRow" class="hidden" style="display:flex; gap:10px">
+      <select id="blobSelect" style="flex:1"></select>
+      <button id="btnLoadBlob" class="primary">Load</button>
+    </div>
+
+    <div id="csvTitle" class="hint" style="margin-top:16px"></div>
+    <div id="csvTableWrap" style="overflow:auto; max-height:460px; margin-top:8px"></div>
+  </section>
+
+  <footer class="foot">
+    Signed in as <span id="whoami">—</span>
+  </footer>
+</div>
+<script src="app.js?v=2"></script>
+</body>
+</html>

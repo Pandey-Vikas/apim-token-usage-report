@@ -1,0 +1,17 @@
+# Build output
+bin/
+obj/
+_publish/
+_stage/
+*.zip
+
+# User-specific
+*.user
+.vs/
+
+# Local settings (never commit secrets/endpoints)
+local.settings.json
+appsettings.Local.json
+
+# Portal's remembered deployment config
+deploy-config.json
