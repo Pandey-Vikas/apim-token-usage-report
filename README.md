@@ -1,106 +1,140 @@
 # Token Usage Report
 
 A **minimal .NET App Service web app** that pulls **Azure OpenAI / AI Foundry token usage**
-from Application Insights, enriches it with Cognitive Services model/account/SKU metadata,
-and **serves the report as CSV through a secured API** — ready to consume in a portal or
-**Power BI**.
+from Application Insights (populated by API Management token metrics), enriches it with
+Cognitive Services model/account/SKU metadata, and **serves the report as CSV through a secured
+API** — ready to consume in a portal or **Power BI**.
 
 It is deliberately simple and cheap: **no storage account, no private endpoint, no VNet.**
 The app generates the report **on demand** from Application Insights (which already retains
-the raw token telemetry) and returns it — the portal and Power BI call the app; the client
-never touches Blob Storage.
+the raw token telemetry) and returns it.
 
-It replaces the previous Terraform + Logic App solution with:
+Contents of this repo:
 
-- One **.NET web app** ([src/TokenUsageReport](./src/TokenUsageReport)) — a secured reports API.
-- One **PowerShell script** ([deploy/deploy.ps1](./deploy/deploy.ps1)) that provisions everything and deploys the app.
-- A **deployment portal** ([gui/](./gui)) — a local web GUI for point-and-click sign-in, deployment, and viewing reports.
-
-### Secured reports API
-
-Every `/api/*` call requires an **`X-Api-Key`** header (a key generated at deploy time):
-
-| Endpoint | Purpose |
-|----------|---------|
-| `POST /api/run` | Generate the default-window report and return the CSV (JSON) |
-| `GET /api/report?startDate=2026-10-01&endDate=2026-10-06` | Generate an inclusive UTC date range (JSON) |
-| `GET /api/report.csv?lookbackHours=N` | Generate by lookback hours as raw `text/csv` — **Power BI Web connector friendly** |
-| `GET /healthz` | Health check (no key required) |
-
-The app authenticates to Application Insights (and Azure Resource Graph/ARM for enrichment)
-with its **managed identity** — granted *Monitoring Reader* on the component and *Reader* on
-the subscription. No secrets, no storage.
-
-> **Optional blob persistence:** if you set `STORAGE_BLOB_ENDPOINT` on the app, it will also
-> write a daily CSV to that container and expose `GET /api/reports` / `GET /api/reports/content`.
-> This is off by default because it requires the app to reach the storage account (a private
-> endpoint when the storage blocks public access), which adds cost and networking.
+- [src/TokenUsageReport](./src/TokenUsageReport) — the .NET 9 web app (secured reports API).
+- [deploy/deploy.ps1](./deploy/deploy.ps1) — one PowerShell script that provisions everything and deploys the app.
+- [gui/](./gui) — a local **Deployment Portal** (web GUI) for point-and-click sign-in, deployment and report viewing.
 
 ---
 
-## What it produces
+## Table of contents
 
-The report CSV columns:
-
-| Column | Source |
-|--------|--------|
-| SubscriptionId, DeploymentName, Backend | App Insights `customMetrics` dimensions |
-| ModelName, AccountName, CogSvcSubscriptionId, AccountId, SkuName, SkuCapacity | Resource Graph + ARM inventory |
-| PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls | App Insights token metrics |
-
-> `TotalTokens = PromptTokens + CompletionTokens`. Reasoning tokens are already included in
-> completion tokens and are intentionally not reported separately.
+1. [Architecture](#architecture)
+2. [Prerequisites](#prerequisites)
+3. [Installation (step by step)](#installation-step-by-step)
+4. [Verify the deployment](#verify-the-deployment)
+5. [Using the API](#using-the-api)
+6. [Connect Power BI](#connect-power-bi)
+7. [Report columns](#report-columns)
+8. [Configuration reference](#configuration-reference)
+9. [Run locally](#run-locally)
+10. [Update / redeploy / uninstall](#update--redeploy--uninstall)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
-## How it works
+## Architecture
 
-1. **Query Application Insights** (`customMetrics`) for the report window using Azure Monitor Query.
-2. **Build inventory** of Cognitive Services deployments via Azure Resource Graph + the ARM REST API.
+```
+APIM (token metrics) ──► Application Insights (customMetrics)
+                                   │  Azure Monitor Query
+                                   ▼
+Client / Power BI ──X-Api-Key──► App Service (.NET 9, managed identity) ──► Azure Resource Graph + ARM
+                                   │                                         (model / account / SKU inventory)
+                                   ▼
+                                CSV / JSON report
+```
+
+1. **Query Application Insights** (`customMetrics`) for the report window.
+2. **Build an inventory** of Cognitive Services deployments via Azure Resource Graph + ARM.
 3. **Left-join** token rows to inventory on `Backend + DeploymentName`.
-4. **Render CSV** and **upload to Blob Storage**.
+4. **Render CSV/JSON** and return it from the secured API.
 
-All Azure calls authenticate with the App Service **system-assigned managed identity** (no secrets).
+All Azure calls use the App Service **system-assigned managed identity** (no secrets). The
+identity is granted **Monitoring Reader** on the Application Insights component and **Reader**
+on the subscription.
 
 ---
 
 ## Prerequisites
 
-- An existing **Application Insights** component already receiving APIM token metrics
-  (`Prompt Tokens`, `Completion Tokens`, `Prompt Cached Tokens`, `Total Tokens` with
-  `Deployment`, `Subscription ID`, `Backend` dimensions).
-- **Azure CLI** logged in: `az login`
-- **.NET SDK 9+**
-- Permission to create resources and assign roles in the target subscription.
+### Azure
+
+| Requirement | Details |
+|-------------|---------|
+| Azure subscription | You need **Owner**, or **Contributor + User Access Administrator**, on the target subscription/resource group (the deploy creates resources **and assigns roles**). |
+| Application Insights component | Must already exist and be receiving APIM token metrics: `Prompt Tokens`, `Completion Tokens`, `Prompt Cached Tokens`, `Total Tokens`, with dimensions `Deployment`, `Subscription ID`, `Backend`. |
+| Network | Outbound internet access to `*.azure.com`, `*.azurewebsites.net`, `login.microsoftonline.com`. |
+
+### Tools on the machine you deploy from (Windows)
+
+| Tool | Version | Install |
+|------|---------|---------|
+| **.NET SDK** | 9.0 or later | `winget install Microsoft.DotNet.SDK.9` |
+| **Azure CLI** | latest | `winget install Microsoft.AzureCLI` |
+| **PowerShell** | 7+ recommended (Windows PowerShell 5.1 works) | `winget install Microsoft.PowerShell` |
+| **Git** | any | `winget install Git.Git` |
+
+Open a **new** terminal after installing so the tools are on `PATH`, then verify:
+
+```powershell
+dotnet --version     # 9.x or higher
+az --version
+git --version
+```
 
 ---
 
-## Deploy
+## Installation (step by step)
 
-You can deploy two ways: a **point-and-click web GUI** (recommended) or the **PowerShell script** directly.
+### Step 1 — Get the code
 
-### Option A — Deployment portal (GUI)
+The repo is private; make sure your GitHub account has access (sign in via Git Credential Manager when prompted).
 
-A local web app that walks you through: **Az Login → Subscription → Resource group → Configure → Deploy**.
-It signs you in with the Azure CLI, lets you pick/create a resource group, choose your Application
-Insights component, and then provisions everything and sets the Entra/RBAC permissions — with live logs.
+```powershell
+git clone https://github.com/Pandey-Vikas/apim-token-usage-report.git
+cd apim-token-usage-report
+```
+
+### Step 2 — Sign in to Azure
+
+```powershell
+az login
+az account set --subscription "<subscription name or id>"
+az account show --query "{name:name, id:id}" -o table
+```
+
+### Step 3 — Find your Application Insights resource ID
+
+```powershell
+az extension add --name application-insights   # first time only
+az monitor app-insights component show `
+    --app <appi-name> --resource-group <appi-rg> --query id -o tsv
+```
+
+The ID looks like
+`/subscriptions/<sub>/resourceGroups/<rg>/providers/microsoft.insights/components/<appi>`.
+
+### Step 4 — Deploy (choose one option)
+
+#### Option A — Deployment Portal (GUI, recommended)
 
 ```powershell
 cd gui
 ./run.ps1
 ```
 
-This builds and starts the portal, then opens `http://127.0.0.1:5099`. Steps in the browser:
+This builds and starts the portal and opens **http://127.0.0.1:5099**. In the browser:
 
 1. **Sign in** — browser or device-code login (via `az login`).
 2. **Subscription** — choose the target subscription.
 3. **Resource group** — pick an existing one or create a new one.
-4. **Configure & deploy** — select the Application Insights component, tweak options, and click
-   **Deploy to Azure**. Under the hood the portal runs [deploy.ps1](./deploy/deploy.ps1) and streams its output.
+4. **Configure & deploy** — select the Application Insights component, adjust options, click
+   **Deploy to Azure**. The portal runs [deploy.ps1](./deploy/deploy.ps1) and streams live logs.
 
-Requirements: **.NET SDK 9+** and **Azure CLI**.
+If port 5099 is busy: `./run.ps1 -Port 5100`.
 
-### Option B — PowerShell script directly
+#### Option B — PowerShell script
 
 ```powershell
 cd deploy
@@ -110,47 +144,126 @@ cd deploy
     -RunNow
 ```
 
-The script will:
+If script execution is blocked: `Set-ExecutionPolicy -Scope Process Bypass`.
 
-1. Create a resource group, storage account, and `token-reports` container.
-2. Create a Windows App Service plan (`B1` by default) + Web App with a managed identity.
-3. Grant the identity least-privilege roles:
-   - **Monitoring Reader** on the Application Insights component
-   - **Reader** on the subscription (Resource Graph + list AI deployments)
-   - **Storage Blob Data Contributor** on the report storage account
-4. Publish the worker and deploy it as the **`TokenUsageReport`** triggered WebJob.
-5. With `-RunNow`, trigger it once so you get a CSV immediately.
+The script is **idempotent** (safe to re-run or resume after a failure) and will:
 
-### Useful parameters
+1. Create/reuse the resource group.
+2. Create/reuse a **Windows** App Service plan (`B1` by default) and a Web App with a system-assigned identity.
+3. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription.
+4. Publish the app and set a generated `REPORTS_API_KEY`.
+5. With `-RunNow`, call the API once to prove the report works.
+
+### Step 5 — Save the output
+
+At the end the script prints (the portal shows the same):
+
+```
+App URL     : https://<app>.azurewebsites.net
+Api Key     : <generated key>
+Report API  : https://<app>.azurewebsites.net/api/report.csv?lookbackHours=24
+```
+
+**Copy the API key** and store it securely (e.g. a password manager). It can be re-read any time:
+
+```powershell
+az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API_KEY'].value" -o tsv
+```
+
+> Role assignments can take a few minutes to propagate. If the first report call returns an
+> authorization error, wait 2–5 minutes and retry.
+
+### Deploy script parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `-AppInsightsResourceId` | *(required)* | App Insights component to read metrics from |
 | `-Location` | `eastus` | Azure region |
-| `-SubscriptionId` | current | Target subscription |
+| `-SubscriptionId` | current `az` subscription | Target subscription |
 | `-BaseName` | `tokrpt` | Prefix for generated resource names |
 | `-ResourceGroup` | `<BaseName>-rg` | Resource group name |
-| `-PlanSku` | `B1` | App Service plan SKU (Basic+ required for scheduled WebJobs) |
-| `-ReportContainer` | `token-reports` | Blob container for CSVs |
-| `-Schedule` | `0 0 6 * * *` | WebJob CRON (6-field: sec min hour day month day-of-week) |
-| `-LookbackHours` | `24` | Query window size |
+| `-PlanName` / `-PlanResourceGroup` | generated | Reuse an existing **Windows** App Service plan |
+| `-AppName` | generated | Web App name (must be globally unique) |
+| `-PlanSku` | `B1` | App Service plan SKU (`F1` also works for on-demand use) |
+| `-LookbackHours` | `24` | Default report window size |
 | `-EndOffsetHours` | `0` | Hours subtracted from UTC midnight to end the window |
-| `-RunNow` | off | Trigger the WebJob once after deploy |
+| `-RunNow` | off | Generate a report once after deploy |
 
 ---
 
-## Application settings
+## Verify the deployment
 
-Set automatically by the deploy script; override on the App Service if needed:
+```powershell
+$url = "https://<app>.azurewebsites.net"
+$key = "<api key>"
+
+Invoke-RestMethod "$url/healthz"                                    # no key required
+(Invoke-WebRequest "$url/api/report.csv?lookbackHours=24" -Headers @{ 'X-Api-Key' = $key }).Content
+```
+
+You should see CSV rows with token counts per deployment. An empty report means no token
+metrics exist in that window — check APIM is emitting them into the same App Insights.
+
+---
+
+## Using the API
+
+Every `/api/*` call requires an **`X-Api-Key`** header.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/run` | Generate the default-window report and return the CSV (JSON) |
+| `GET /api/report?startDate=2026-10-01&endDate=2026-10-06` | Inclusive UTC date range (JSON) |
+| `GET /api/report.csv?lookbackHours=N` | Lookback window as raw `text/csv` — **Power BI friendly** |
+| `GET /healthz` | Health check (no key required) |
+
+```powershell
+curl.exe -H "X-Api-Key: <key>" "https://<app>.azurewebsites.net/api/report.csv?lookbackHours=168" -o report.csv
+```
+
+---
+
+## Connect Power BI
+
+1. **Get Data → Web → Advanced**.
+2. URL: `https://<app>.azurewebsites.net/api/report.csv?lookbackHours=168`
+3. Add an HTTP request header: `X-Api-Key` = `<your key>`.
+4. Authentication: **Anonymous** (the key is passed via the header).
+5. Load, then schedule refresh in the Power BI service.
+
+---
+
+## Report columns
+
+| Column | Source |
+|--------|--------|
+| SubscriptionId, DeploymentName, Backend | App Insights `customMetrics` dimensions |
+| ModelName, AccountName, CogSvcSubscriptionId, AccountId, SkuName, SkuCapacity | Resource Graph + ARM inventory |
+| PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls | App Insights token metrics |
+
+> `TotalTokens = PromptTokens + CompletionTokens`. Reasoning tokens are already included in
+> completion tokens and are not reported separately.
+
+---
+
+## Configuration reference
+
+Set automatically by the deploy script; override on the App Service (Settings → Environment variables) if needed:
 
 | Setting | Description |
 |---------|-------------|
-| `APPINSIGHTS_RESOURCE_ID` | ARM id of the App Insights component |
-| `STORAGE_BLOB_ENDPOINT` | Blob endpoint, e.g. `https://acct.blob.core.windows.net/` |
-| `REPORT_CONTAINER` | Container for CSVs (default `token-reports`) |
-| `REPORT_LOOKBACK_HOURS` | Window size in hours (default `24`) |
+| `APPINSIGHTS_RESOURCE_ID` | ARM id of the App Insights component (required) |
+| `REPORTS_API_KEY` | API key required in the `X-Api-Key` header |
+| `REPORT_LOOKBACK_HOURS` | Default window size in hours (default `24`) |
 | `REPORT_END_OFFSET_HOURS` | Hours before UTC midnight to end the window (default `0`) |
 | `REPORT_DATE` | Optional explicit report date `yyyy-MM-dd` (backfill / manual runs) |
+| `STORAGE_BLOB_ENDPOINT`, `REPORT_CONTAINER` | *Optional.* If set, the app also writes a daily CSV to Blob Storage (off by default; requires the app to reach the storage account) |
+
+To rotate the API key:
+
+```powershell
+az webapp config appsettings set -g <rg> -n <app> --settings REPORTS_API_KEY=<new-key>
+```
 
 ---
 
@@ -159,16 +272,40 @@ Set automatically by the deploy script; override on the App Service if needed:
 ```powershell
 cd src/TokenUsageReport
 $env:APPINSIGHTS_RESOURCE_ID = "/subscriptions/.../components/<appi>"
-$env:STORAGE_BLOB_ENDPOINT   = "https://<acct>.blob.core.windows.net/"
+$env:REPORTS_API_KEY         = "local-test-key"
 dotnet run
 ```
 
-Locally it authenticates with your `az login` / Visual Studio credentials, so that identity
-needs the same three roles listed above.
+Locally it authenticates with your `az login` / Visual Studio credentials, so your identity needs
+**Monitoring Reader** on the App Insights component and **Reader** on the subscription.
 
 ---
 
-## Connect Power BI
+## Update / redeploy / uninstall
 
-Use the **Azure Blob Storage** connector, point it at the `token-reports` container, and
-combine the daily CSVs. Because each file is dated, incremental refresh works naturally.
+- **Update:** `git pull`, then re-run `deploy.ps1` (or the portal) with the same parameters. The existing API key is kept.
+- **Uninstall:** delete the resource group created by the deploy (only if it is dedicated to this app):
+
+  ```powershell
+  az group delete --name <rg> --yes --no-wait
+  ```
+
+  If you reused a shared resource group, delete just the Web App (and the plan, if created by this deploy),
+  and remove the role assignments of its managed identity.
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `az` / `dotnet` not recognized | Install the tools above and open a **new** terminal. |
+| Script blocked by execution policy | `Set-ExecutionPolicy -Scope Process Bypass` |
+| Role assignment fails (`AuthorizationFailed`) | You need Owner or User Access Administrator on the scope. |
+| `401/403` from App Insights or Resource Graph right after deploy | Role propagation delay — wait a few minutes and retry. |
+| `401 Unauthorized` from the API | Missing/incorrect `X-Api-Key` header. |
+| App Service plan "is a LINUX plan" error | This app needs a **Windows** plan; use a different `-PlanName` or delete the Linux plan. |
+| App name already taken | Pass a unique `-AppName` (or a different `-BaseName`). |
+| Empty report | No token metrics in the window; widen `lookbackHours` and confirm APIM emits metrics to this App Insights. |
+| Portal port in use | `./run.ps1 -Port 5100` |
+| First request slow | Cold start; `B1` with Always On keeps the app warm. |
