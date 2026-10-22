@@ -128,9 +128,10 @@ cd gui
 This builds and starts the portal and opens **http://127.0.0.1:5099**. In the browser:
 
 1. **Sign in** — browser or device-code login (via `az login`).
-2. **Subscription** — choose the target subscription.
-3. **Resource group** — pick an existing one or create a new one.
-4. **Configure & deploy** — select the Application Insights component, adjust options, click
+2. **Tenant** — after sign-in, a **Tenant (directory)** dropdown lists every tenant you can access (name, domain, ID). To use a different one, pick it and click **Switch tenant** (a sign-in window opens for that tenant). A tenant that is not listed can be entered by ID or domain via **Other…**. **Next** is enabled once the active tenant matches your selection.
+3. **Subscription** — only subscriptions from the selected tenant are listed.
+4. **Resource group** — pick an existing one or create a new one.
+5. **Configure & deploy** — select the Application Insights component, adjust options, click
    **Deploy to Azure**. The portal runs [deploy.ps1](./deploy/deploy.ps1) and streams live logs.
 
 If port 5099 is busy: `./run.ps1 -Port 5100`.
@@ -203,15 +204,16 @@ The portal ([gui/](./gui)) is the easiest way to deploy **and** test. Start it w
 | # | Where in the UI | What to do | Expected result |
 |---|-----------------|------------|-----------------|
 | 1 | Sign in to Azure | Choose browser or device-code login and sign in | Footer shows `Signed in as <your account>` |
-| 2 | Choose a subscription | Select the subscription that holds your App Insights | Step advances to resource groups |
-| 3 | Resource group | Pick an existing group or create a new one (pick a region) | Group is selected |
-| 4 | Configure & deploy | Select the Application Insights component, then click **Deploy to Azure** | Live log streams; ends with the **App URL** and **API key** |
-| 5 | Welcome back / **View reports →** | Open the report viewer (shown automatically on later launches) | Viewer shows App, App URL and Resource group |
-| 6 | **Show sample report** | Click it | A sample table appears — confirms the viewer works |
-| 7 | **Run report now** | Pick a start/end date (UTC) and click it (can take up to a minute) | Table of token usage, or a message *"no token metrics were found"* if APIM has not emitted data in that window |
-| 8 | Report table | Check PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls | Totals match the APIM traffic for that period |
+| 2 | Tenant (directory) | Pick the tenant that holds your subscription; if it is not the current one, click **Switch tenant** and sign in | Dropdown shows `[current]` on your choice and **Next** is enabled |
+| 3 | Choose a subscription | Select the subscription that holds your App Insights | Only subscriptions from the chosen tenant are listed |
+| 4 | Resource group | Pick an existing group or create a new one (pick a region) | Group is selected |
+| 5 | Configure & deploy | Select the Application Insights component, then click **Deploy to Azure** | Live log streams; ends with the **App URL** and **API key** |
+| 6 | Welcome back / **View reports →** | Open the report viewer (shown automatically on later launches) | Viewer shows App, App URL and Resource group |
+| 7 | **Show sample report** | Click it | A sample table appears — confirms the viewer works |
+| 8 | **Run report now** | Pick a quick range or start/end dates (UTC) and click it (can take up to a minute) | Table of token usage, or a message *"no token metrics were found"* if APIM has not emitted data in that window |
+| 9 | Report table | Check PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls | Totals match the APIM traffic for that period; the file also appears in **Generated reports** and can be downloaded |
 
-> **Quick test of the UI itself:** if step 7 says no data, widen the date range (e.g. the last 30 days).
+> **Quick test of the UI itself:** if step 8 says no data, widen the date range (e.g. the last 30 days).
 > Role assignments can take a few minutes after the first deploy — retry if you see an authorization error.
 
 ### Step-by-step check using commands
@@ -357,5 +359,6 @@ Locally it authenticates with your `az login` / Visual Studio credentials, so yo
 | App Service plan "is a LINUX plan" error | This app needs a **Windows** plan; use a different `-PlanName` or delete the Linux plan. |
 | App name already taken | Pass a unique `-AppName` (or a different `-BaseName`). |
 | Empty report | No token metrics in the window; widen `lookbackHours` and confirm APIM emits metrics to this App Insights. |
+| Wrong tenant / subscription missing in the list | On step 1 choose the right tenant from **Tenant (directory)** and click **Switch tenant** (or `az login --tenant <id>` for the script). Subscriptions are filtered to the active tenant. |
 | Portal port in use | `./run.ps1 -Port 5100` |
 | First request slow | Cold start; `B1` with Always On keeps the app warm. |

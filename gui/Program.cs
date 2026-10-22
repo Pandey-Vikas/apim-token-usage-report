@@ -88,7 +88,9 @@ app.MapGet("/api/login-poll", async () =>
     {
         var currentKey = LoginManager.AccountKey(account);
         var currentTenant = account.Value.TryGetProperty("tenantId", out var t) ? t.GetString() : null;
+        // Only a GUID can be compared to account.tenantId; a domain name (contoso.onmicrosoft.com) can't.
         var tenantOk = string.IsNullOrWhiteSpace(s.RequestedTenant)
+            || !Guid.TryParse(s.RequestedTenant, out _)
             || string.Equals(currentTenant, s.RequestedTenant, StringComparison.OrdinalIgnoreCase);
 
         bool done;
@@ -124,14 +126,77 @@ app.MapGet("/api/login-poll", async () =>
 app.MapPost("/api/login-cancel", () => { login.Cancel(); return Results.Json(new { ok = true }); });
 
 // --- Subscriptions / resource groups / locations ---------------------------
-app.MapGet("/api/subscriptions", async () =>
+app.MapGet("/api/subscriptions", async (string? tenantId) =>
 {
     try
     {
         var subs = await az.JsonAsync(new[] { "account", "list" });
-        return Results.Json(subs ?? JsonDocument.Parse("[]").RootElement);
+        if (subs is null || subs.Value.ValueKind != JsonValueKind.Array)
+            return Results.Json(Array.Empty<object>());
+        // Only show subscriptions from the selected tenant (the CLI cache can hold several tenants).
+        var filtered = subs.Value.EnumerateArray().Where(s =>
+            (string.IsNullOrWhiteSpace(tenantId) ||
+             (s.TryGetProperty("tenantId", out var t) &&
+              string.Equals(t.GetString(), tenantId, StringComparison.OrdinalIgnoreCase)))
+            && !(s.TryGetProperty("state", out var st) && st.ValueKind == JsonValueKind.String
+                 && !string.Equals(st.GetString(), "Enabled", StringComparison.OrdinalIgnoreCase))
+            && !(s.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String
+                 && (n.GetString() ?? "").StartsWith("N/A(tenant level account)", StringComparison.OrdinalIgnoreCase)));
+        return Results.Json(filtered.ToList());
     }
     catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
+});
+
+// Tenants (directories) the signed-in user can pick from: ARM tenant list + tenants seen in the CLI cache.
+app.MapGet("/api/tenants", async () =>
+{
+    var tenants = new Dictionary<string, (string Name, string Domain)>(StringComparer.OrdinalIgnoreCase);
+    string? current = null;
+    try
+    {
+        var acct = await az.JsonAsync(new[] { "account", "show" }, timeoutMs: 15_000);
+        if (acct is { ValueKind: JsonValueKind.Object } a && a.TryGetProperty("tenantId", out var ct))
+            current = ct.GetString();
+    }
+    catch { /* not signed in */ }
+
+    try
+    {
+        var arm = await az.JsonAsync(new[] { "rest", "--method", "get",
+            "--url", "https://management.azure.com/tenants?api-version=2022-12-01" }, timeoutMs: 30_000);
+        if (arm is { ValueKind: JsonValueKind.Object } r && r.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Array)
+            foreach (var t in v.EnumerateArray())
+            {
+                var id = t.TryGetProperty("tenantId", out var i) ? i.GetString() : null;
+                if (string.IsNullOrEmpty(id)) continue;
+                tenants[id] = (
+                    t.TryGetProperty("displayName", out var dn) ? dn.GetString() ?? "" : "",
+                    t.TryGetProperty("defaultDomain", out var dd) ? dd.GetString() ?? "" : "");
+            }
+    }
+    catch { /* fall back to the cached accounts below */ }
+
+    try
+    {
+        var subs = await az.JsonAsync(new[] { "account", "list" });
+        if (subs is { ValueKind: JsonValueKind.Array })
+            foreach (var s in subs.Value.EnumerateArray())
+            {
+                var id = s.TryGetProperty("tenantId", out var i) ? i.GetString() : null;
+                if (string.IsNullOrEmpty(id) || tenants.ContainsKey(id)) continue;
+                tenants[id] = (
+                    s.TryGetProperty("tenantDisplayName", out var dn) ? dn.GetString() ?? "" : "",
+                    s.TryGetProperty("tenantDefaultDomain", out var dd) ? dd.GetString() ?? "" : "");
+            }
+    }
+    catch { /* ignore */ }
+
+    if (current is not null && !tenants.ContainsKey(current)) tenants[current] = ("", "");
+
+    var list = tenants
+        .Select(kv => new { tenantId = kv.Key, displayName = kv.Value.Name, defaultDomain = kv.Value.Domain, current = string.Equals(kv.Key, current, StringComparison.OrdinalIgnoreCase) })
+        .OrderByDescending(x => x.current).ThenBy(x => x.displayName, StringComparer.OrdinalIgnoreCase);
+    return Results.Json(new { currentTenantId = current, tenants = list });
 });
 
 app.MapPost("/api/subscription", async (SubscriptionBody body) =>

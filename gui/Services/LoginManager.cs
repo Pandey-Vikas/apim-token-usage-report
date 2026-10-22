@@ -76,14 +76,14 @@ public sealed partial class LoginManager
     public Task StartBrowserLoginAsync(string? tenantId)
     {
         var args = new List<string> { "login", "--only-show-errors" };
-        if (!string.IsNullOrWhiteSpace(tenantId)) { args.Add("--tenant"); args.Add(tenantId); }
+        if (!string.IsNullOrWhiteSpace(tenantId)) { args.Add("--tenant"); args.Add(tenantId); args.Add("--allow-no-subscriptions"); }
         return StartAsync(args, LoginKind.Browser, tenantId);
     }
 
     public Task StartDeviceCodeLoginAsync(string? tenantId)
     {
         var args = new List<string> { "login", "--use-device-code", "--only-show-errors" };
-        if (!string.IsNullOrWhiteSpace(tenantId)) { args.Add("--tenant"); args.Add(tenantId); }
+        if (!string.IsNullOrWhiteSpace(tenantId)) { args.Add("--tenant"); args.Add(tenantId); args.Add("--allow-no-subscriptions"); }
         return StartAsync(args, LoginKind.DeviceCode, tenantId);
     }
 

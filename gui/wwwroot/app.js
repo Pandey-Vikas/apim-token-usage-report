@@ -63,19 +63,74 @@ async function refreshStatus() {
 }
 
 function onSignedIn(account) {
-  $('btnSignedInNext').disabled = false;
+  window.signedIn = true;
+  window.currentTenantId = account.tenantId || null;
   const name = account.user?.name || account.name;
   const tenant = account.tenantId ? ` · tenant ${account.tenantId}` : '';
   $('loginStatus').className = 'status ok';
   $('loginStatus').textContent = `Signed in: ${name}${tenant}`;
   $('whoami').textContent = (account.user?.name || account.name || '—') + (account.tenantId ? ` (tenant ${account.tenantId})` : '');
-  // Reflect the detected tenant in the field (only if the user hasn't typed one).
-  if (account.tenantId && !$('tenant').value.trim()) $('tenant').value = account.tenantId;
+  loadTenants();
 }
 
-async function startLogin(kind) {
+// --- Tenant picker ---------------------------------------------------------
+const OTHER_TENANT = '__other__';
+
+async function loadTenants() {
+  $('tenantPicker').classList.remove('hidden');
+  $('tenantManual').classList.add('hidden');
+  $('btnSignedInNext').disabled = true;
+  $('tenantSelect').innerHTML = '<option>Loading your tenants…</option>';
+  const r = await api.get('/api/tenants');
+  window.currentTenantId = r.currentTenantId || window.currentTenantId;
+  const sel = $('tenantSelect');
+  sel.innerHTML = '';
+  (r.tenants || []).forEach((t) => {
+    const o = document.createElement('option');
+    o.value = t.tenantId;
+    const label = t.displayName || t.defaultDomain || t.tenantId;
+    o.textContent = `${label}${t.defaultDomain && t.displayName ? ` (${t.defaultDomain})` : ''} — ${t.tenantId}${t.current ? '  [current]' : ''}`;
+    if (t.current) o.selected = true;
+    sel.appendChild(o);
+  });
+  const other = document.createElement('option');
+  other.value = OTHER_TENANT;
+  other.textContent = 'Other… (enter a tenant ID or domain)';
+  sel.appendChild(other);
+  updateTenantUi();
+}
+
+function tenantTarget() {
+  const v = $('tenantSelect').value;
+  return v === OTHER_TENANT ? $('tenant').value.trim() : v;
+}
+
+function updateTenantUi() {
+  if (!window.signedIn) { $('btnSignedInNext').disabled = true; return; }
+  const other = $('tenantSelect').value === OTHER_TENANT;
+  $('tenantManual').classList.toggle('hidden', !other);
+  const target = tenantTarget();
+  const needSwitch = !!target && target.toLowerCase() !== (window.currentTenantId || '').toLowerCase();
+  $('btnSwitchTenant').disabled = !needSwitch;
+  $('btnSignedInNext').disabled = needSwitch;
+  $('tenantHint').innerHTML = needSwitch
+    ? 'You picked a different tenant. Click <strong>Switch tenant</strong> to sign in to it, then continue.'
+    : 'Pick the directory that contains the subscription you want to deploy to. If it differs from your current one, click <strong>Switch tenant</strong> — a sign-in window opens for that tenant.';
+}
+
+$('tenantSelect').addEventListener('change', updateTenantUi);
+$('tenant').addEventListener('input', updateTenantUi);
+$('btnSwitchTenant').addEventListener('click', () => {
+  const target = tenantTarget();
+  if (target) startLogin('browser', target);
+});
+
+async function startLogin(kind, tenantOverride) {
   clearInterval(pollTimer);
-  const tenantId = $('tenant').value.trim() || null;
+  const manualVisible = !$('tenantManual').classList.contains('hidden');
+  const tenantId = tenantOverride || (manualVisible ? $('tenant').value.trim() : '') || null;
+  $('btnSignedInNext').disabled = true;
+  $('btnSwitchTenant').disabled = true;
   $('loginStatus').className = 'status info';
   $('loginStatus').innerHTML = '<span class="spinner"></span>Starting sign-in… a browser window will open.';
 
@@ -103,6 +158,7 @@ async function startLogin(kind) {
       clearInterval(pollTimer);
       $('loginStatus').className = 'status err';
       $('loginStatus').textContent = p.error || 'Sign-in failed.';
+      updateTenantUi();
       return;
     }
 
@@ -130,16 +186,23 @@ $('btnSignedInNext').addEventListener('click', async () => { await loadSubscript
 
 // --- Step 2: subscriptions -------------------------------------------------
 async function loadSubscriptions() {
-  const subs = await api.get('/api/subscriptions');
+  const tenantId = window.currentTenantId || '';
+  const subs = await api.get(`/api/subscriptions?tenantId=${encodeURIComponent(tenantId)}`);
   const sel = $('subscription');
   sel.innerHTML = '';
-  (Array.isArray(subs) ? subs : []).forEach((s) => {
+  const list = Array.isArray(subs) ? subs : [];
+  list.forEach((s) => {
     const opt = document.createElement('option');
     opt.value = s.id;
     opt.textContent = `${s.name} (${s.id})`;
     if (s.isDefault) opt.selected = true;
     sel.appendChild(opt);
   });
+  const tName = $('tenantSelect').selectedOptions[0]?.textContent.replace(/\s*\[current\]$/, '') || tenantId;
+  $('subSub').textContent = list.length
+    ? `Showing ${list.length} subscription(s) in tenant ${tName}. Resources will be created in the one you select.`
+    : `No enabled subscriptions found in tenant ${tName} for your account. Go back and switch to a different tenant.`;
+  $('btnSubNext').disabled = list.length === 0;
 }
 
 $('btnSubNext').addEventListener('click', async () => {

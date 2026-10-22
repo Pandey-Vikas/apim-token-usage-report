@@ -37,9 +37,20 @@
     <p class="sub">Uses the Azure CLI on this machine. A browser window opens for you to authenticate.</p>
     <div id="prereq" class="status info">Checking Azure CLI…</div>
 
-    <label for="tenant">Tenant ID (optional)</label>
-    <input type="text" id="tenant" placeholder="Leave blank for your default tenant">
-    <p class="hint">Click <strong>Sign in with browser</strong> to sign in or switch accounts — you'll pick the account in the pop-up. Only set a tenant to target a specific directory.</p>
+    <div id="tenantPicker" class="hidden">
+      <label for="tenantSelect">Tenant (directory)</label>
+      <div class="filerow">
+        <select id="tenantSelect"></select>
+        <button id="btnSwitchTenant" class="secondary" disabled>Switch tenant</button>
+      </div>
+      <p class="hint" id="tenantHint">Pick the directory that contains the subscription you want to deploy to. If it differs from your current one, click <strong>Switch tenant</strong> — a sign-in window opens for that tenant.</p>
+    </div>
+
+    <div id="tenantManual">
+      <label for="tenant">Tenant ID or domain <span class="muted">(optional)</span></label>
+      <input type="text" id="tenant" placeholder="Leave blank for your default tenant, or e.g. contoso.onmicrosoft.com">
+      <p class="hint">Click <strong>Sign in with browser</strong> to sign in or switch accounts — you'll pick the account in the pop-up. After signing in you can choose any of your tenants from a list.</p>
+    </div>
 
     <div class="footer">
       <div>
@@ -54,7 +65,7 @@
   <!-- Step 2: Subscription -->
   <section class="panel hidden" id="step2">
     <h2>Choose a subscription</h2>
-    <p class="sub">Resources will be created in the selected subscription.</p>
+    <p class="sub" id="subSub">Resources will be created in the selected subscription.</p>
     <label for="subscription">Subscription</label>
     <select id="subscription"></select>
     <div class="footer">
@@ -217,6 +228,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=5"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
