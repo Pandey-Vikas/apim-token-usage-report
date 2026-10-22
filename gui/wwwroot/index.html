@@ -127,10 +127,11 @@
         <select id="location"></select>
       </div>
       <div>
-        <label for="baseName">Base name</label>
+        <label for="baseName">Name prefix <span class="muted">(for auto-named resources)</span></label>
         <input type="text" id="baseName" value="tokrpt">
       </div>
     </div>
+    <p class="hint" id="namePreview"></p>
 
     <label>App Service plan <span class="muted">(hosts the app)</span></label>
     <div class="picker">
@@ -251,6 +252,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=9"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>

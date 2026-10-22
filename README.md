@@ -187,7 +187,7 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 | `-NewAppInsightsName` | – | Create a new App Insights component (+ Log Analytics workspace) with this name instead |
 | `-Location` | `eastus` | Azure region |
 | `-SubscriptionId` | current `az` subscription | Target subscription |
-| `-BaseName` | `tokrpt` | Prefix for generated resource names |
+| `-BaseName` | `tokrpt` | Name prefix — only used to auto-name resources you don't name yourself (`<BaseName>-plan`, `<BaseName>-app-xxxxxx`, default resource group `<BaseName>-rg`). Called **Name prefix** in the portal |
 | `-ResourceGroup` | `<BaseName>-rg` | Resource group name |
 | `-PlanName` / `-PlanResourceGroup` | generated | Reuse an existing **Windows** App Service plan |
 | `-AppName` | generated | Web App name (must be globally unique) |

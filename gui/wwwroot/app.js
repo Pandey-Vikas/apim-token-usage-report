@@ -384,6 +384,20 @@ async function loadStep4Resources() {
 document.querySelectorAll('input[name="aiMode"]').forEach((r) => r.addEventListener('change', renderAiGuide));
 $('appInsights').addEventListener('change', renderAiGuide);
 
+// Prefix used for auto-generated names; restricted to characters valid in Azure resource names.
+const namePrefix = () => ($('baseName').value.trim() || 'tokrpt').replace(/[^A-Za-z0-9-]/g, '-');
+
+// The name prefix only feeds auto-generated names; show exactly what a blank field will become.
+function updateNamePreview() {
+  const base = namePrefix();
+  $('aiNew').placeholder = `Leave blank to auto-name (${base}-appi)`;
+  $('planNew').placeholder = `Leave blank to auto-name (${base}-plan)`;
+  $('appNew').placeholder = `Leave blank to auto-name (${base}-app-xxxxxx)`;
+  $('namePreview').innerHTML = `The prefix is only used for resources whose name you leave blank below — e.g. <code>${base}-plan</code>, <code>${base}-app-xxxxxx</code> (random suffix), <code>${base}-appi</code>. Names you type in yourself are used exactly as entered. Web app names must be unique across all of Azure.`;
+}
+$('baseName').addEventListener('input', updateNamePreview);
+updateNamePreview();
+
 // --- Report query (KQL) editor ------------------------------------------------
 const normalizeQuery = (q) => (q || '').replace(/\r\n/g, '\n').trim();
 
@@ -480,7 +494,7 @@ $('btnDeploy').addEventListener('click', async () => {
       return;
     }
   } else {
-    const base = $('baseName').value.trim() || 'tokrpt';
+    const base = namePrefix();
     newAppInsightsName = $('aiNew').value.trim() || `${base}-appi`;
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,259}$/.test(newAppInsightsName)) {
       $('deployStatus').className = 'status err';
@@ -508,7 +522,7 @@ $('btnDeploy').addEventListener('click', async () => {
     reportQuery,
     location: $('location').value,
     subscriptionId: $('subscription').value,
-    baseName: $('baseName').value.trim() || 'tokrpt',
+    baseName: namePrefix(),
     resourceGroup: window.selectedRg,
     planSku: $('planSku').value,
     lookbackHours: Number($('lookback').value) || 24,
