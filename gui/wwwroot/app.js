@@ -315,6 +315,7 @@ $('btnDeploy').addEventListener('click', async () => {
     lookbackHours: Number($('lookback').value) || 24,
     endOffsetHours: 0,
     runNow: $('runNow').checked,
+    grantAllSubscriptions: $('grantAll').checked,
     planName: plan.name,
     planResourceGroup: plan.resourceGroup,
     appName: appPick.name,

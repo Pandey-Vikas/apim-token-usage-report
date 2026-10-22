@@ -151,7 +151,7 @@ The script is **idempotent** (safe to re-run or resume after a failure) and will
 
 1. Create/reuse the resource group.
 2. Create/reuse a **Windows** App Service plan (`B1` by default) and a Web App with a system-assigned identity.
-3. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription.
+3. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription (and, with `-GrantAllSubscriptions`, on all your other subscriptions); enable public query access on the component if it was disabled.
 4. Publish the app and set a generated `REPORTS_API_KEY`.
 5. With `-RunNow`, call the API once to prove the report works.
 
@@ -189,6 +189,7 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 | `-LookbackHours` | `24` | Default report window size |
 | `-EndOffsetHours` | `0` | Hours subtracted from UTC midnight to end the window |
 | `-RunNow` | off | Generate a report once after deploy |
+| `-GrantAllSubscriptions` | off (ticked by default in the portal) | Also grant Reader on all other accessible subscriptions |
 
 ---
 
@@ -276,8 +277,8 @@ curl.exe -H "X-Api-Key: <key>" "https://<app>.azurewebsites.net/api/report.csv?l
 |------|------------------|--------------------|
 | Inbound to the app | App must be reachable over HTTPS from the caller (portal machine / Power BI service). Do not enable *private-only* access or IP restrictions that exclude them. | Timeouts / 403 from `*.azurewebsites.net` |
 | Outbound from the app | `login.microsoftonline.com`, `management.azure.com`, `api.applicationinsights.io` / `api.loganalytics.io` over 443. | Report call returns 500 with a connection error |
-| Application Insights network isolation | If the component (or its Log Analytics workspace) has **query access set to Disabled / uses a private link scope (AMPLS)**, the app cannot query it from the public internet. Either set query access to *Enabled*, or add VNet integration + a private endpoint to the AMPLS. | 403 / "public network access disabled" from the Monitor query |
-| Subscription scope of `Reader` | The deploy grants **Reader on the deployment subscription only**. Model/account/SKU columns for Azure OpenAI accounts in *other* subscriptions stay **blank** (token numbers are still correct). Grant `Reader` to the app identity on those subscriptions/management group too. | Blank ModelName / AccountName / SkuName columns |
+| Application Insights network isolation | The deploy **automatically switches on public query access** for the component if it was disabled (POC convenience). If it is behind a private link scope (AMPLS) that still blocks the app, add VNet integration + a private endpoint to the AMPLS. | 403 / "public network access disabled" from the Monitor query |
+| Reader on other subscriptions | In the portal, leave **"Grant read access on all my subscriptions"** ticked (default) — or pass `-GrantAllSubscriptions` to `deploy.ps1`. The deploy then grants Reader on every subscription you can access, so no manual roles are needed. Without it, model/account/SKU columns for accounts in other subscriptions stay blank (token numbers are still correct). | Blank ModelName / AccountName / SkuName columns |
 | Local portal | Runs only on `127.0.0.1`; foreign Host/Origin requests are rejected. Run it on the same machine as your browser. | `403 Forbidden: portal is local-only` when browsed via another hostname |
 
 ### Optional blob persistence (off by default)

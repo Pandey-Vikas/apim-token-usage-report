@@ -17,7 +17,8 @@ public sealed record DeployRequest(
     // Optional explicit resource names (existing-or-create). Null => derived by the script.
     string? PlanName = null,
     string? PlanResourceGroup = null,
-    string? AppName = null);
+    string? AppName = null,
+    bool GrantAllSubscriptions = false);
 
 /// <summary>
 /// Invokes the existing deploy.ps1 (single source of truth for provisioning + RBAC)
@@ -87,6 +88,7 @@ public sealed class Deployer
             "-EndOffsetHours", req.EndOffsetHours.ToString(),
         };
         if (req.RunNow) args.Add("-RunNow");
+        if (req.GrantAllSubscriptions) args.Add("-GrantAllSubscriptions");
 
         void AddIf(string flag, string? value)
         {

@@ -60,7 +60,11 @@ param(
     [int] $EndOffsetHours = 0,
 
     # Trigger a report run at the end of deployment.
-    [switch] $RunNow
+    [switch] $RunNow,
+
+    # POC convenience: also grant Reader on every enabled subscription you can access so model/account/SKU
+    # enrichment works for Azure OpenAI accounts in other subscriptions (no manual role assignment needed).
+    [switch] $GrantAllSubscriptions
 )
 
 $ErrorActionPreference = "Stop"
@@ -151,11 +155,11 @@ az webapp config appsettings set --name $AppName --resource-group $ResourceGroup
 if ($LASTEXITCODE -ne 0) { throw "Failed to set application settings on '$AppName'." }
 
 # --- Role assignments (idempotent + retry for identity propagation) ---------
-function Grant-Role([string] $Role, [string] $Scope) {
+function Grant-Role([string] $Role, [string] $Scope, [int] $Retries = 6) {
     $existing = az role assignment list --assignee $principalId --role $Role --scope $Scope --query "[0].id" -o tsv 2>$null
     if ($existing) { Write-Host "  '$Role' already assigned"; return }
     $lastErr = ""
-    for ($i = 1; $i -le 6; $i++) {
+    for ($i = 1; $i -le $Retries; $i++) {
         $lastErr = az role assignment create --assignee-object-id $principalId `
             --assignee-principal-type ServicePrincipal --role $Role --scope $Scope --output none 2>&1
         if ($LASTEXITCODE -eq 0) { Write-Host "  granted '$Role'"; return }
@@ -168,6 +172,31 @@ function Grant-Role([string] $Role, [string] $Scope) {
 Write-Step "Assigning RBAC roles to the app identity"
 Grant-Role "Monitoring Reader"  $AppInsightsResourceId
 Grant-Role "Reader"             "/subscriptions/$SubscriptionId"
+
+if ($GrantAllSubscriptions) {
+    Write-Step "Granting Reader on all other accessible subscriptions (for cross-subscription enrichment)"
+    $otherSubs = az account list --query "[?state=='Enabled' && id!='$SubscriptionId'].id" -o tsv 2>$null
+    foreach ($sub in $otherSubs) {
+        if (-not $sub) { continue }
+        try { Grant-Role "Reader" "/subscriptions/$sub" -Retries 1 }
+        catch { Write-Warning "  Skipped subscription ${sub}: $($_.Exception.Message)" }
+    }
+}
+
+# --- Make sure Application Insights can be queried over the public endpoint (best effort) -----
+Write-Step "Checking Application Insights query access"
+try {
+    $env:AZURE_EXTENSION_USE_DYNAMIC_INSTALL = "yes_without_prompt"
+    $queryAccess = az monitor app-insights component show --ids $AppInsightsResourceId `
+        --query "publicNetworkAccessForQuery" -o tsv --only-show-errors 2>$null
+    if ($queryAccess -and $queryAccess -ne "Enabled") {
+        az monitor app-insights component update --ids $AppInsightsResourceId --query-access Enabled `
+            --output none --only-show-errors 2>$null
+        if ($LASTEXITCODE -eq 0) { Write-Host "  enabled public query access (was '$queryAccess')" }
+        else { Write-Warning "  could not enable public query access; the report may fail if the component is network-isolated." }
+    } else { Write-Host "  query access OK" }
+}
+catch { Write-Warning "  skipped query-access check: $($_.Exception.Message)" }
 
 # --- Build & package the web app -------------------------------------------
 Write-Step "Publishing .NET web app"
