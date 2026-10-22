@@ -385,7 +385,8 @@ document.querySelectorAll('input[name="aiMode"]').forEach((r) => r.addEventListe
 $('appInsights').addEventListener('change', renderAiGuide);
 
 // Prefix used for auto-generated names; restricted to characters valid in Azure resource names.
-const namePrefix = () => ($('baseName').value.trim() || 'tokrpt').replace(/[^A-Za-z0-9-]/g, '-');
+const namePrefix = () =>
+  ($('baseName').value.trim().replace(/[^A-Za-z0-9-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '')) || 'tokrpt';
 
 // The name prefix only feeds auto-generated names; show exactly what a blank field will become.
 function updateNamePreview() {
