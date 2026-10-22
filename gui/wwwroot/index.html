@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Token Usage Report — Deploy</title>
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
 <div class="app">
@@ -202,10 +202,11 @@
 
     <div id="viewerStatus" class="status"></div>
 
-    <label for="blobSelect" id="blobSelectLabel" class="hidden">Report file</label>
-    <div id="blobRow" class="hidden" style="display:flex; gap:10px">
-      <select id="blobSelect" style="flex:1"></select>
+    <label for="blobSelect" id="blobSelectLabel" class="hidden">Generated reports <span class="muted">(saved in this browser; newest first)</span></label>
+    <div id="blobRow" class="hidden filerow">
+      <select id="blobSelect"></select>
       <button id="btnLoadBlob" class="primary">Load</button>
+      <button id="btnDownload" class="secondary" disabled>Download CSV</button>
     </div>
 
     <div id="csvTitle" class="hint" style="margin-top:16px"></div>
@@ -216,6 +217,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=4"></script>
+<script src="app.js?v=5"></script>
 </body>
 </html>

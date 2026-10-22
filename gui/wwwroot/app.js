@@ -415,7 +415,10 @@ $('btnOpenViewer').addEventListener('click', () => {
 });
 $('btnViewerBack').addEventListener('click', () => showViewer(false));
 
-function csvToTable(csv) {
+function csvToTable(csv, name) {
+  window.currentCsv = csv;
+  window.currentName = name || 'token-usage-report.csv';
+  $('btnDownload').disabled = !csv;
   const wrap = $('csvTableWrap');
   wrap.innerHTML = '';
   const lines = csv.split(/\r?\n/).filter((l) => l.length > 0);
@@ -460,40 +463,81 @@ function csvToTable(csv) {
   $('csvTitle').textContent = `${rows.length - 1} row(s) × ${rows[0].length} columns`;
 }
 
+const HISTORY_KEY = 'tokrptReportHistory';
+function loadHistory() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+}
+function saveToHistory(name, csv, rows) {
+  const list = loadHistory().filter((h) => h.name !== name);
+  list.unshift({ name, csv, rows, savedAt: new Date().toISOString() });
+  while (list.length > 0) {
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 25))); return; }
+    catch { list.pop(); } // storage full: drop the oldest and retry
+  }
+}
+
+function renderReportList(blobReports) {
+  const sel = $('blobSelect');
+  const previous = sel.value;
+  sel.innerHTML = '';
+  const add = (value, text) => { const o = document.createElement('option'); o.value = value; o.textContent = text; sel.appendChild(o); };
+  const history = loadHistory();
+  history.forEach((h) => add(`local|${h.name}`, `${h.name} — ${h.rows} row(s), generated ${new Date(h.savedAt).toLocaleString()}`));
+  blobReports.forEach((b) => add(`blob|${b.name}`, `${b.name} (stored in blob, ${b.size} bytes)`));
+  if ([...sel.options].some((o) => o.value === previous)) sel.value = previous;
+  const hasAny = sel.options.length > 0;
+  $('blobSelectLabel').classList.toggle('hidden', !hasAny);
+  $('blobRow').classList.toggle('hidden', !hasAny);
+  return hasAny;
+}
+
 async function listBlobs() {
   $('viewerStatus').className = 'status info';
-  $('viewerStatus').innerHTML = '<span class="spinner"></span>Listing reports via the app…';
-  const r = await api.get('/api/app-reports');
-  const reports = (r.reports) || [];
-  const sel = $('blobSelect');
-  sel.innerHTML = '';
-  reports.forEach((b) => { const o = document.createElement('option'); o.value = b.name; o.textContent = `${b.name} (${b.size} bytes)`; sel.appendChild(o); });
+  $('viewerStatus').innerHTML = '<span class="spinner"></span>Refreshing report list…';
+  let r = {};
+  try { r = await api.get('/api/app-reports'); } catch (e) { r = { error: String(e) }; }
+  const hasAny = renderReportList((r && r.reports) || []);
 
-  const hasBlobs = reports.length > 0;
-  $('blobSelectLabel').classList.toggle('hidden', !hasBlobs);
-  $('blobRow').classList.toggle('hidden', !hasBlobs);
-
-  if (r.error) {
+  if (r && r.error) {
     $('viewerStatus').className = 'status err';
-    $('viewerStatus').innerHTML = `Could not list reports: ${r.error}<br><span class="muted">The portal reads reports through the deployed app's secured API. Make sure the app is deployed and running, then try again. You can also click <strong>Run report now</strong> or <strong>Show sample report</strong>.</span>`;
-  } else if (!hasBlobs) {
+    $('viewerStatus').innerHTML = `Could not reach the deployed app: ${r.error}<br><span class="muted">Make sure the app is deployed and running, then try again. You can also click <strong>Run report now</strong> or <strong>Show sample report</strong>.</span>`;
+  } else if (!hasAny) {
     $('viewerStatus').className = 'status info';
-    $('viewerStatus').innerHTML = 'Click <strong>Run report now</strong> to generate a report from Application Insights, or <strong>Show sample report</strong> to preview the format.';
+    $('viewerStatus').innerHTML = 'No reports yet. Click <strong>Run report now</strong> to generate one from Application Insights — it will be saved here so you can reopen or download it — or <strong>Show sample report</strong> to preview the format.';
   } else {
     $('viewerStatus').className = 'status ok';
-    $('viewerStatus').textContent = `Found ${reports.length} report file(s) — served by the app.`;
+    $('viewerStatus').textContent = `${$('blobSelect').options.length} saved report(s) available — pick one and click Load.`;
   }
 }
 
 async function loadBlob() {
-  const name = $('blobSelect').value;
+  const [kind, ...rest] = ($('blobSelect').value || '').split('|');
+  const name = rest.join('|');
   if (!name) return;
+  if (kind === 'local') {
+    const h = loadHistory().find((x) => x.name === name);
+    if (!h) { $('viewerStatus').className = 'status err'; $('viewerStatus').textContent = 'That report is no longer saved in this browser.'; return; }
+    $('viewerStatus').className = 'status ok';
+    $('viewerStatus').textContent = `Showing ${name}`;
+    csvToTable(h.csv, name);
+    return;
+  }
   $('viewerStatus').className = 'status info';
   $('viewerStatus').innerHTML = '<span class="spinner"></span>Loading via the app…';
   const r = await api.get(`/api/app-report?name=${encodeURIComponent(name)}`);
   if (r.error) { $('viewerStatus').className = 'status err'; $('viewerStatus').textContent = r.error; return; }
   $('viewerStatus').textContent = '';
-  csvToTable(r.csv);
+  csvToTable(r.csv, name.split('/').pop());
+}
+
+function downloadCurrent() {
+  if (!window.currentCsv) return;
+  const blob = new Blob([window.currentCsv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = window.currentName || 'token-usage-report.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 async function showSample() {
@@ -502,7 +546,7 @@ async function showSample() {
   const r = await api.get('/api/sample-report');
   $('viewerStatus').className = 'status info';
   $('viewerStatus').innerHTML = '<span class="muted">Preview of the report format (sample data, not from your storage).</span>';
-  csvToTable(r.csv);
+  csvToTable(r.csv, 'sample-token-usage-report.csv');
 }
 
 async function runReport() {
@@ -536,9 +580,13 @@ async function runReport() {
       $('viewerStatus').innerHTML = `Report ran successfully, but <strong>no token metrics were found</strong> from ${startDate} through ${endDate} UTC. Once APIM emits <code>llm-emit-token-metric</code> data into this Application Insights, reports will have content. Click <strong>Show sample report</strong> to preview the format.`;
       return;
     }
+    const reportName = `token-usage_${startDate}_to_${endDate}.csv`;
+    saveToHistory(reportName, r.csv, r.rowCount);
+    renderReportList([]);
+    $('blobSelect').value = `local|${reportName}`;
     $('viewerStatus').className = 'status ok';
-    $('viewerStatus').textContent = `✔ Report generated by the app (${r.rowCount} row(s)).`;
-    csvToTable(r.csv);
+    $('viewerStatus').textContent = `✔ Report generated (${r.rowCount} row(s)) and saved as ${reportName}.`;
+    csvToTable(r.csv, reportName);
   } catch (e) {
     $('viewerStatus').className = 'status err';
     $('viewerStatus').textContent = String(e);
@@ -550,6 +598,7 @@ async function runReport() {
 $('btnRunReport').addEventListener('click', runReport);
 $('btnListBlobs').addEventListener('click', listBlobs);
 $('btnLoadBlob').addEventListener('click', loadBlob);
+$('btnDownload').addEventListener('click', downloadCurrent);
 $('btnSample').addEventListener('click', showSample);
 
 const iso = (d) => d.toISOString().slice(0, 10);
