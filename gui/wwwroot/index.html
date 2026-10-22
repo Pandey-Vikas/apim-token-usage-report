@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Token Usage Report — Deploy</title>
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
 <div class="app">
@@ -116,9 +116,10 @@
       <label class="radioline"><input type="radio" name="aiMode" value="new"> Create new</label>
       <div id="aiNewFields" class="hidden">
         <input type="text" id="aiNew" placeholder="Leave blank to auto-name (tokrpt-appi)">
-        <p class="hint" style="margin-left:26px">Creates the component and a Log Analytics workspace in the selected resource group and location. A new component is empty until APIM is set up to emit token metrics into it.</p>
+        <p class="hint" style="margin-left:26px">Creates the component and a Log Analytics workspace in the selected resource group and location. A new component is empty until something writes token data into it (see below).</p>
       </div>
     </div>
+    <div id="aiGuide" class="hint callout"></div>
 
     <div class="grid2">
       <div>
@@ -154,6 +155,21 @@
       <label class="radioline"><input type="radio" name="appMode" value="new" checked> Create new</label>
       <input type="text" id="appNew" placeholder="Leave blank to auto-name (tokrpt-app-…)">
     </div>
+
+    <details id="queryBox" class="advanced">
+      <summary>Advanced: report query (KQL) <span class="muted">— what the app runs against Application Insights</span></summary>
+      <label for="queryTemplate">Template</label>
+      <select id="queryTemplate"></select>
+      <p class="hint" id="queryDesc"></p>
+      <label for="reportQuery">Query</label>
+      <textarea id="reportQuery" rows="14" spellcheck="false"></textarea>
+      <p class="hint" id="queryHint"></p>
+      <div class="qbuttons">
+        <button type="button" id="btnValidateQuery" class="secondary">Validate query</button>
+        <button type="button" id="btnResetQuery" class="secondary">Reset to template</button>
+      </div>
+      <div id="queryStatus" class="status"></div>
+    </details>
 
     <label for="lookback">Lookback hours <span class="muted">(default report window)</span></label>
     <input type="text" id="lookback" value="24">
@@ -235,6 +251,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=8"></script>
+<script src="app.js?v=9"></script>
 </body>
 </html>

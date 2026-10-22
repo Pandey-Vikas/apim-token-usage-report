@@ -36,6 +36,9 @@ public sealed class ReportConfig
     /// <summary>UTC hour (0-23) at which the daily scheduled report runs. Default 6.</summary>
     public int ScheduleHourUtc { get; init; } = 6;
 
+    /// <summary>Optional custom KQL (decoded from REPORT_QUERY_B64). When null the bundled default query is used.</summary>
+    public string? ReportQuery { get; init; }
+
     public static ReportConfig FromEnvironment()
     {
         string Require(string name)
@@ -73,7 +76,15 @@ public sealed class ReportConfig
             ReportDateOverride = Optional("REPORT_DATE"),
             ApiKey = Optional("REPORTS_API_KEY"),
             ScheduleHourUtc = OptionalInt("REPORT_SCHEDULE_HOUR_UTC", 6),
+            ReportQuery = DecodeQuery(Optional("REPORT_QUERY_B64")),
         };
+    }
+
+    private static string? DecodeQuery(string? base64)
+    {
+        if (base64 is null) return null;
+        try { return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(base64)); }
+        catch (FormatException) { throw new InvalidOperationException("REPORT_QUERY_B64 is not valid base64."); }
     }
 
     /// <summary>Computes the (startUtc, endUtc) query window.</summary>

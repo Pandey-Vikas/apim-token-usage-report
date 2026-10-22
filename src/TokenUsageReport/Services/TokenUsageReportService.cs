@@ -23,7 +23,7 @@ public sealed class TokenUsageReportService
     public TokenUsageReportService(ReportConfig config, TokenCredential credential)
     {
         _config = config;
-        _appInsights = new AppInsightsClient(config.AppInsightsResourceId, credential);
+        _appInsights = new AppInsightsClient(config.AppInsightsResourceId, credential, config.ReportQuery);
         _inventory = new InventoryClient(credential);
         _blob = string.IsNullOrWhiteSpace(config.BlobStorageEndpoint)
             ? null

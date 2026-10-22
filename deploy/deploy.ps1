@@ -71,7 +71,12 @@ param(
 
     # POC convenience: also grant Reader on every enabled subscription you can access so model/account/SKU
     # enrichment works for Azure OpenAI accounts in other subscriptions (no manual role assignment needed).
-    [switch] $GrantAllSubscriptions
+    [switch] $GrantAllSubscriptions,
+
+    # Optional path to a .kql file that replaces the default report query (see src/TokenUsageReport/Queries).
+    # When omitted, the app uses its bundled default query (and any previously deployed custom query is cleared).
+    [Parameter(Mandatory = $false)]
+    [string] $ReportQueryFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -220,6 +225,21 @@ az webapp config appsettings set --name $AppName --resource-group $ResourceGroup
     "REPORTS_API_KEY=$apiKey" `
     --output none
 if ($LASTEXITCODE -ne 0) { throw "Failed to set application settings on '$AppName'." }
+
+# --- Report query (custom KQL is stored base64-encoded so multi-line text survives the CLI) ---------
+if ($ReportQueryFile) {
+    if (-not (Test-Path $ReportQueryFile)) { throw "Report query file not found: $ReportQueryFile" }
+    $queryText = Get-Content -Raw -Path $ReportQueryFile
+    if ([string]::IsNullOrWhiteSpace($queryText)) { throw "Report query file is empty: $ReportQueryFile" }
+    $queryB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($queryText))
+    Write-Step "Applying custom report query ($($queryText.Length) characters)"
+    az webapp config appsettings set --name $AppName --resource-group $ResourceGroup `
+        --settings "REPORT_QUERY_B64=$queryB64" --output none
+    if ($LASTEXITCODE -ne 0) { throw "Failed to set the custom report query on '$AppName'." }
+} else {
+    az webapp config appsettings delete --name $AppName --resource-group $ResourceGroup `
+        --setting-names REPORT_QUERY_B64 --output none 2>$null
+}
 
 # --- Role assignments (idempotent + retry for identity propagation) ---------
 # Condense a verbose az error to "<Code>: <first sentence>" so the log stays readable.

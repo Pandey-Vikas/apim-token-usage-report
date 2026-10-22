@@ -464,6 +464,115 @@ app.MapPost("/api/app-run", async (AppRunBody? body, CancellationToken ct) =>
     catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 502); }
 });
 
+// --- Report query (KQL) templates + validation + APIM link detection ----------------------
+var queriesDir = Path.Combine(Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath,
+    "src", "TokenUsageReport", "Queries");
+var queryMeta = new Dictionary<string, (string Name, string Description)>(StringComparer.OrdinalIgnoreCase)
+{
+    ["apim-token-metrics"] = ("APIM token metrics (default)",
+        "Reads Prompt/Completion/Cached/Total Tokens metrics emitted by the APIM llm-emit-token-metric policy."),
+    ["foundry-genai"] = ("Foundry / GenAI telemetry (starting point)",
+        "Reads OpenTelemetry gen_ai.* spans from Foundry agents / Azure OpenAI SDK tracing. Verify against your data."),
+};
+string[] requiredColumns = { "SubscriptionId", "DeploymentName", "Backend", "PromptTokens", "CompletionTokens", "CachedTokens", "TotalTokens", "Calls" };
+
+app.MapGet("/api/queries", () =>
+{
+    try
+    {
+        var list = Directory.Exists(queriesDir)
+            ? Directory.GetFiles(queriesDir, "*.kql").OrderBy(f => f.Contains("apim-token-metrics") ? 0 : 1).Select(f =>
+            {
+                var id = Path.GetFileNameWithoutExtension(f);
+                queryMeta.TryGetValue(id, out var m);
+                return new { id, name = m.Name ?? id, description = m.Description ?? "", query = File.ReadAllText(f) };
+            }).ToList()
+            : null;
+        return Results.Json(new { queries = list, required = requiredColumns });
+    }
+    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
+});
+
+app.MapPost("/api/validate-query", async (ValidateQueryBody body) =>
+{
+    if (string.IsNullOrWhiteSpace(body?.AppInsightsResourceId) || string.IsNullOrWhiteSpace(body.Query))
+        return Results.Json(new { error = "An Application Insights component and a query are required." }, statusCode: 400);
+    if (!body.AppInsightsResourceId.StartsWith("/subscriptions/", StringComparison.OrdinalIgnoreCase)
+        || body.AppInsightsResourceId.IndexOfAny(new[] { '&', '|', '<', '>', '^', '%', '"', ' ', '?' }) >= 0)
+        return Results.Json(new { error = "Invalid Application Insights resource id." }, statusCode: 400);
+
+    var bodyFile = Path.Combine(Path.GetTempPath(), $"tokrpt-q-{Guid.NewGuid():N}.json");
+    try
+    {
+        await File.WriteAllTextAsync(bodyFile, JsonSerializer.Serialize(new { query = body.Query, timespan = "P30D" }));
+        var res = await az.JsonAsync(new[] { "rest", "--method", "post",
+            "--url", $"https://management.azure.com{body.AppInsightsResourceId}/api/query?api-version=2014-12-01-preview",
+            "--body", $"@{bodyFile}" }, timeoutMs: 90_000);
+
+        var cols = new List<string>();
+        var rowCount = 0;
+        if (res is { ValueKind: JsonValueKind.Object } r)
+        {
+            JsonElement tables = default;
+            var has = r.TryGetProperty("Tables", out tables) || r.TryGetProperty("tables", out tables);
+            if (has && tables.ValueKind == JsonValueKind.Array && tables.GetArrayLength() > 0)
+            {
+                var t = tables[0];
+                if ((t.TryGetProperty("Columns", out var c) || t.TryGetProperty("columns", out c)) && c.ValueKind == JsonValueKind.Array)
+                    foreach (var col in c.EnumerateArray())
+                        cols.Add((col.TryGetProperty("ColumnName", out var n) || col.TryGetProperty("name", out n)) ? n.GetString() ?? "" : "");
+                if ((t.TryGetProperty("Rows", out var rw) || t.TryGetProperty("rows", out rw)) && rw.ValueKind == JsonValueKind.Array)
+                    rowCount = rw.GetArrayLength();
+            }
+        }
+        var missing = requiredColumns.Where(rc => !cols.Contains(rc, StringComparer.OrdinalIgnoreCase)).ToArray();
+        return Results.Json(new { ok = true, columns = cols, missing, rowCount });
+    }
+    catch (Exception ex)
+    {
+        var msg = ex.Message;
+        var m = System.Text.RegularExpressions.Regex.Match(msg, "\"innererror\":\\{\"code\":\"(\\w+)\",\"message\":\"([^\"]*)\"");
+        if (m.Success) msg = $"KQL error: {m.Groups[2].Value} ({m.Groups[1].Value}). Check the query syntax.";
+        else if (msg.Length > 600) msg = msg[..600] + "…";
+        return Results.Json(new { ok = false, error = msg });
+    }
+    finally { try { File.Delete(bodyFile); } catch { /* ignore */ } }
+});
+
+// Which Application Insights does each APIM instance log to? Those are the components that receive llm-emit-token-metric data.
+app.MapGet("/api/apim-links", async () =>
+{
+    var links = new List<object>();
+    try
+    {
+        var apims = await az.JsonAsync(new[] { "apim", "list" });
+        if (apims is { ValueKind: JsonValueKind.Array })
+            foreach (var a in apims.Value.EnumerateArray())
+            {
+                var id = a.TryGetProperty("id", out var i) ? i.GetString() : null;
+                var name = a.TryGetProperty("name", out var n) ? n.GetString() : null;
+                if (string.IsNullOrEmpty(id)) continue;
+                try
+                {
+                    var loggers = await az.JsonAsync(new[] { "rest", "--method", "get",
+                        "--url", $"https://management.azure.com{id}/loggers?api-version=2022-08-01" }, timeoutMs: 30_000);
+                    if (loggers is { ValueKind: JsonValueKind.Object } l && l.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Array)
+                        foreach (var lg in v.EnumerateArray())
+                        {
+                            if (!lg.TryGetProperty("properties", out var p)) continue;
+                            var type = p.TryGetProperty("loggerType", out var lt) ? lt.GetString() : null;
+                            var res = p.TryGetProperty("resourceId", out var rid) ? rid.GetString() : null;
+                            if (string.Equals(type, "applicationInsights", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(res))
+                                links.Add(new { apim = name, appInsightsId = res });
+                        }
+                }
+                catch { /* this APIM's loggers are not readable — skip it */ }
+            }
+    }
+    catch { /* az apim not available / no access — return what we have */ }
+    return Results.Json(links);
+});
+
 // --- Prerequisites ---------------------------------------------------------
 app.MapGet("/api/prerequisites", async () =>
 {
@@ -512,3 +621,4 @@ record LoginBody(string? TenantId);
 record SubscriptionBody(string? SubscriptionId);
 record CreateRgBody(string? Name, string? Location);
 record AppRunBody(string? AppUrl, string? ApiKey, DateOnly? StartDate, DateOnly? EndDate);
+record ValidateQueryBody(string? AppInsightsResourceId, string? Query);

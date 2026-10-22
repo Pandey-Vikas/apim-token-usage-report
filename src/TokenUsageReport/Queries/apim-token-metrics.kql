@@ -1,0 +1,25 @@
+// APIM token metrics (default) - reads the metrics emitted by the APIM "llm-emit-token-metric" policy.
+// The report window is applied by the app; do not add a time filter. The query MUST return these columns:
+//   SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+let calls = customMetrics
+| where name == 'Total Tokens'
+| extend DeploymentName = tostring(customDimensions['Deployment']),
+         SubscriptionId = tostring(customDimensions['Subscription ID']),
+         Backend = tostring(customDimensions['Backend'])
+| summarize Calls = sum(valueCount) by SubscriptionId, DeploymentName, Backend;
+let tokenData = customMetrics
+| where name in ('Prompt Tokens', 'Completion Tokens', 'Prompt Cached Tokens')
+| extend DeploymentName = tostring(customDimensions['Deployment']),
+         SubscriptionId = tostring(customDimensions['Subscription ID']),
+         Backend = tostring(customDimensions['Backend'])
+| summarize TokenCount = sum(valueSum) by SubscriptionId, DeploymentName, Backend, name
+| evaluate pivot(name, sum(TokenCount))
+| extend PromptTokens = tolong(coalesce(column_ifexists('Prompt Tokens', 0.0), 0.0)),
+         CompletionTokens = tolong(coalesce(column_ifexists('Completion Tokens', 0.0), 0.0)),
+         CachedTokens = tolong(coalesce(column_ifexists('Prompt Cached Tokens', 0.0), 0.0))
+| extend TotalTokens = PromptTokens + CompletionTokens
+| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens;
+tokenData
+| join kind=inner calls on SubscriptionId, DeploymentName, Backend
+| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+| order by SubscriptionId asc, TotalTokens desc

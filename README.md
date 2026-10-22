@@ -27,10 +27,11 @@ Contents of this repo:
 6. [Connect Power BI](#connect-power-bi)
 7. [Report columns](#report-columns)
 8. [Networking & storage](#networking--storage-read-before-a-production-rollout)
-9. [Application settings reference](#application-settings-reference)
-10. [Run locally](#run-locally)
-11. [Update / redeploy / uninstall](#update--redeploy--uninstall)
-12. [Troubleshooting](#troubleshooting)
+9. [Choosing the data source and query](#choosing-the-data-source-and-query)
+10. [Application settings reference](#application-settings-reference)
+11. [Run locally](#run-locally)
+12. [Update / redeploy / uninstall](#update--redeploy--uninstall)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -195,6 +196,7 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 | `-EndOffsetHours` | `0` | Hours subtracted from UTC midnight to end the window |
 | `-RunNow` | off | Generate a report once after deploy |
 | `-GrantAllSubscriptions` | off (ticked by default in the portal) | Also grant Reader on your other subscriptions in the **same tenant** (subscriptions in other tenants are skipped automatically) |
+| `-ReportQueryFile` | *(bundled default)* | Path to a `.kql` file that replaces the report query (see [Choosing the data source and query](#choosing-the-data-source-and-query)). Omit to use — or reset to — the default |
 
 ---
 
@@ -301,6 +303,36 @@ never loses a report: the CSV is still returned and the error is written to the 
 
 ---
 
+## Choosing the data source and query
+
+**Where do the token numbers come from?** Application Insights only contains token data if something writes it there. There are two sources, and the report must read the one you use:
+
+| Source | What writes the data | Which Application Insights | Query template |
+|--------|----------------------|----------------------------|----------------|
+| **APIM** (default) | The APIM `llm-emit-token-metric` policy → `customMetrics` (`Prompt Tokens`, `Completion Tokens`, …) | The one set as the **APIM logger** of your APIM instance | *APIM token metrics (default)* |
+| **Foundry / OpenAI tracing** (no APIM) | OpenTelemetry `gen_ai.*` spans from Foundry agents / the OpenAI SDK → `dependencies` | The one **connected to your Foundry project** | *Foundry / GenAI telemetry (starting point — verify)* |
+
+Linking a Foundry project to an Application Insights does **not** produce the APIM metrics the default query reads, so a freshly created, empty component gives empty reports until one of the two sources writes into it.
+
+**Recommended:** in the portal, choose **Use existing** and pick the component marked **★ APIM '…' logs here** — the portal detects which Application Insights each APIM instance logs to and preselects it. Use **Create new** only if you will then point your APIM logger (or Foundry connection) at the new component.
+
+### Editing the report query
+
+Step 4 of the portal has **Advanced: report query (KQL)**:
+
+1. Pick a template (or write your own) in the editor.
+2. Click **Validate query** — it runs the query against your Application Insights (last 30 days) and checks the required columns are present.
+3. Click **Deploy to Azure** — the query is stored on the app (`REPORT_QUERY_B64`). Leaving the default template untouched keeps the bundled default.
+
+Rules for a custom query:
+- It must return the columns `SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls` (a missing numeric column counts as 0, a missing text column is blank).
+- Do **not** add a time filter — the app applies the report date range.
+- `Backend` + `DeploymentName` are used to join model/account/SKU details, so keep them as the OpenAI endpoint host (e.g. `myaccount.openai.azure.com`) and the deployment name.
+
+From the command line use `./deploy.ps1 ... -ReportQueryFile .\my-query.kql`. The bundled templates live in [src/TokenUsageReport/Queries](./src/TokenUsageReport/Queries). Re-deploying without a custom query resets the app to the default.
+
+---
+
 ## Application settings reference
 
 Set automatically by the deploy script; override on the App Service (Settings → Environment variables) if needed:
@@ -312,6 +344,7 @@ Set automatically by the deploy script; override on the App Service (Settings �
 | `REPORT_LOOKBACK_HOURS` | Default window size in hours (default `24`) |
 | `REPORT_END_OFFSET_HOURS` | Hours before UTC midnight to end the window (default `0`) |
 | `REPORT_DATE` | Optional explicit report date `yyyy-MM-dd` (backfill / manual runs) |
+| `REPORT_QUERY_B64` | Optional custom KQL, base64-encoded UTF-8. Unset = bundled default query. Set by the portal / `-ReportQueryFile` |
 | `STORAGE_BLOB_ENDPOINT`, `REPORT_CONTAINER` | *Optional.* If set, the app also writes a daily CSV to Blob Storage (off by default; requires the app to reach the storage account) |
 
 To rotate the API key:

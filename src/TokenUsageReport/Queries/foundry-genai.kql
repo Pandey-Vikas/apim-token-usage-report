@@ -1,0 +1,17 @@
+// Foundry / GenAI telemetry (STARTING POINT - verify against your data before relying on it).
+// Reads OpenTelemetry GenAI spans (gen_ai.* attributes) that Foundry agents / Azure OpenAI SDK tracing write to
+// Application Insights, instead of APIM metrics. The report window is applied by the app; do not add a time filter.
+// The query MUST return these columns:
+//   SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+dependencies
+| extend Prompt = tolong(customDimensions['gen_ai.usage.input_tokens']),
+         Completion = tolong(customDimensions['gen_ai.usage.output_tokens'])
+| where isnotnull(Prompt) or isnotnull(Completion)
+| extend DeploymentName = coalesce(tostring(customDimensions['gen_ai.response.model']), tostring(customDimensions['gen_ai.request.model'])),
+         Backend = coalesce(tostring(customDimensions['server.address']), tostring(target)),
+         SubscriptionId = ''
+| summarize PromptTokens = sum(coalesce(Prompt, 0)), CompletionTokens = sum(coalesce(Completion, 0)), Calls = count()
+    by SubscriptionId, DeploymentName, Backend
+| extend CachedTokens = long(0), TotalTokens = PromptTokens + CompletionTokens
+| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+| order by TotalTokens desc

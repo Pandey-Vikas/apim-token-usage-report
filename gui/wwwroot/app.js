@@ -279,17 +279,53 @@ $('btnRgNext').addEventListener('click', async () => {
 
 // --- Step 4: configure & deploy -------------------------------------------
 async function loadAppInsights() {
-  const items = await api.get('/api/appinsights');
+  const [items, links] = await Promise.all([
+    api.get('/api/appinsights'),
+    api.get('/api/apim-links').catch(() => []),
+  ]);
   const sel = $('appInsights');
   sel.innerHTML = '';
   const list = Array.isArray(items) ? items : [];
+  const linkMap = new Map();
+  (Array.isArray(links) ? links : []).forEach((l) => {
+    const k = (l.appInsightsId || '').toLowerCase();
+    linkMap.set(k, [...(linkMap.get(k) || []), l.apim]);
+  });
+  let preferred = null;
   list.forEach((a) => {
     const opt = document.createElement('option');
     opt.value = a.id;
-    opt.textContent = `${a.name} (${a.resourceGroup})`;
+    const apims = linkMap.get((a.id || '').toLowerCase());
+    opt.textContent = `${a.name} (${a.resourceGroup})${apims ? `  ★ APIM '${apims.join("', '")}' logs here` : ''}`;
+    if (apims && !preferred) preferred = a.id;
     sel.appendChild(opt);
   });
+  if (preferred) sel.value = preferred;
+  window.apimLinkedCount = [...linkMap.keys()].length;
+  renderAiGuide();
   return list.length;
+}
+
+// Explain where token data actually comes from, so the right Application Insights is chosen.
+function renderAiGuide() {
+  const mode = document.querySelector('input[name="aiMode"]:checked')?.value;
+  const box = $('aiGuide');
+  const sel = $('appInsights');
+  const chosenOpt = sel.options[sel.selectedIndex];
+  const linked = chosenOpt && chosenOpt.textContent.includes('★');
+  if (mode === 'new') {
+    box.className = 'hint callout warn';
+    box.innerHTML = '<strong>A new component is empty.</strong> Token numbers come from the Application Insights that <em>APIM</em> logs to (policy <code>llm-emit-token-metric</code>), or from Foundry/OpenAI tracing. After deploying, point your APIM logger (or your Foundry project\'s Application Insights connection) at this new component — otherwise reports stay empty. If APIM already logs to an existing component, choose <em>Use existing</em> and pick that one instead (marked ★).';
+  } else if (linked) {
+    box.className = 'hint callout good';
+    box.innerHTML = '★ APIM logs to this component, so its token metrics are exactly what the default query reads. This is the right choice.';
+  } else {
+    box.className = 'hint callout warn';
+    box.innerHTML = (window.apimLinkedCount
+      ? 'This component is not the one your APIM logs to (those are marked ★). '
+      : 'No APIM logger was detected in this subscription. ')
+      + 'Reports only have data if APIM (<code>llm-emit-token-metric</code>) writes into this component. Using Foundry directly without APIM? Pick the Application Insights connected to your Foundry project and choose the <em>Foundry / GenAI telemetry</em> query below.';
+  }
 }
 
 // Populate a <select> with {name, resourceGroup} items; stash the RG on each option.
@@ -333,6 +369,7 @@ async function loadStep4Resources() {
     api.get('/api/plans'),
     api.get(`/api/webapps?resourceGroup=${encodeURIComponent(window.selectedRg)}`),
     loadAppInsights(),
+    loadQueries(),
   ]);
 
   const hasPlans = fillResourceSelect('planExisting', plans, (p) => `${p.name} (${p.resourceGroup}${p.sku ? ', ' + p.sku : ''})`);
@@ -341,7 +378,83 @@ async function loadStep4Resources() {
   wirePicker('aiMode', 'appInsights', 'aiNewFields', aiCount > 0);
   wirePicker('planMode', 'planExisting', 'planNewFields', hasPlans);
   wirePicker('appMode', 'appExisting', 'appNew', hasApps);
+  renderAiGuide();
 }
+
+document.querySelectorAll('input[name="aiMode"]').forEach((r) => r.addEventListener('change', renderAiGuide));
+$('appInsights').addEventListener('change', renderAiGuide);
+
+// --- Report query (KQL) editor ------------------------------------------------
+const normalizeQuery = (q) => (q || '').replace(/\r\n/g, '\n').trim();
+
+async function loadQueries() {
+  const r = await api.get('/api/queries');
+  window.queryTemplates = r.queries || [];
+  window.requiredColumns = r.required || [];
+  const sel = $('queryTemplate');
+  sel.innerHTML = '';
+  window.queryTemplates.forEach((q) => {
+    const o = document.createElement('option');
+    o.value = q.id; o.textContent = q.name; sel.appendChild(o);
+  });
+  if (!window.queryTemplates.length) {
+    $('queryBox').classList.add('hidden');
+    return;
+  }
+  $('queryBox').classList.remove('hidden');
+  applyTemplate();
+  $('queryHint').textContent = `The query must return these columns: ${window.requiredColumns.join(', ')} (missing numeric columns count as 0). The app applies the report date range itself — don't add a time filter.`;
+}
+
+function currentTemplate() {
+  return (window.queryTemplates || []).find((q) => q.id === $('queryTemplate').value);
+}
+
+function applyTemplate() {
+  const t = currentTemplate();
+  if (!t) return;
+  $('reportQuery').value = t.query;
+  $('queryDesc').textContent = t.description;
+  $('queryStatus').textContent = '';
+  $('queryStatus').className = 'status';
+}
+
+$('queryTemplate').addEventListener('change', applyTemplate);
+$('btnResetQuery').addEventListener('click', applyTemplate);
+
+$('btnValidateQuery').addEventListener('click', async () => {
+  const st = $('queryStatus');
+  const mode = document.querySelector('input[name="aiMode"]:checked').value;
+  if (mode !== 'existing' || !$('appInsights').value) {
+    st.className = 'status info';
+    st.textContent = 'Validation runs against an existing Application Insights. A new component does not exist yet — after the deploy, use Run report now to check the query.';
+    return;
+  }
+  st.className = 'status info';
+  st.innerHTML = '<span class="spinner"></span>Validating against the last 30 days…';
+  $('btnValidateQuery').disabled = true;
+  try {
+    const r = await api.post('/api/validate-query', {
+      appInsightsResourceId: $('appInsights').value,
+      query: $('reportQuery').value,
+    });
+    if (r.error || r.ok === false) {
+      st.className = 'status err';
+      st.textContent = r.error || 'Query failed.';
+    } else if (r.missing && r.missing.length) {
+      st.className = 'status err';
+      st.textContent = `Query runs, but these required columns are missing: ${r.missing.join(', ')}.`;
+    } else {
+      st.className = 'status ok';
+      st.textContent = `✔ Query is valid — ${r.rowCount} row(s) in the last 30 days, all required columns present.`;
+    }
+  } catch (e) {
+    st.className = 'status err';
+    st.textContent = String(e);
+  } finally {
+    $('btnValidateQuery').disabled = false;
+  }
+});
 
 // Resolve a picker to { name, resourceGroup } (name may be null => script auto-names).
 function resolvePicker(modeName, existingSelId, newInputId) {
@@ -379,9 +492,20 @@ $('btnDeploy').addEventListener('click', async () => {
   const plan = resolvePicker('planMode', 'planExisting', 'planNew');
   const appPick = resolvePicker('appMode', 'appExisting', 'appNew');
 
+  // Only send a custom query when it differs from the bundled default (null => app keeps its default query).
+  const defaultTemplate = (window.queryTemplates || []).find((q) => q.id === 'apim-token-metrics');
+  const queryText = $('reportQuery').value;
+  if (!queryText.trim() && (window.queryTemplates || []).length) {
+    $('deployStatus').className = 'status err';
+    $('deployStatus').textContent = 'The report query is empty. Use "Reset to template" or enter a query.';
+    return;
+  }
+  const reportQuery = defaultTemplate && normalizeQuery(queryText) === normalizeQuery(defaultTemplate.query) ? null : queryText;
+
   const req = {
     appInsightsResourceId,
     newAppInsightsName,
+    reportQuery,
     location: $('location').value,
     subscriptionId: $('subscription').value,
     baseName: $('baseName').value.trim() || 'tokrpt',

@@ -19,7 +19,8 @@ public sealed record DeployRequest(
     string? PlanResourceGroup = null,
     string? AppName = null,
     bool GrantAllSubscriptions = false,
-    string? NewAppInsightsName = null);
+    string? NewAppInsightsName = null,
+    string? ReportQuery = null);
 
 /// <summary>
 /// Invokes the existing deploy.ps1 (single source of truth for provisioning + RBAC)
@@ -101,6 +102,15 @@ public sealed class Deployer
         AddIf("-PlanResourceGroup", req.PlanResourceGroup);
         AddIf("-AppName", req.AppName);
 
+        // A custom KQL query is handed to the script as a temp file (multi-line text is awkward on a command line).
+        string? queryFile = null;
+        if (!string.IsNullOrWhiteSpace(req.ReportQuery))
+        {
+            queryFile = Path.Combine(Path.GetTempPath(), $"tokrpt-report-{Guid.NewGuid():N}.kql");
+            await File.WriteAllTextAsync(queryFile, req.ReportQuery, ct);
+            AddIf("-ReportQueryFile", queryFile);
+        }
+
         var psi = new ProcessStartInfo
         {
             FileName = _pwsh,
@@ -128,7 +138,14 @@ public sealed class Deployer
 
         using var reg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
 
-        await foreach (var line in channel.Reader.ReadAllAsync(CancellationToken.None))
-            yield return line;
+        try
+        {
+            await foreach (var line in channel.Reader.ReadAllAsync(CancellationToken.None))
+                yield return line;
+        }
+        finally
+        {
+            if (queryFile is not null) { try { File.Delete(queryFile); } catch { /* ignore */ } }
+        }
     }
 }
