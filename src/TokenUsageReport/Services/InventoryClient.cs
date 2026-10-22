@@ -115,19 +115,27 @@ public sealed class InventoryClient
 
     private async Task<List<JsonElement>> GetDeploymentsAsync(string accountId, CancellationToken ct)
     {
-        var uri = $"https://management.azure.com{accountId}/deployments?api-version=2024-10-01";
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
-        await AuthorizeAsync(request, ArmScope, ct);
-
-        using var response = await _http.SendAsync(request, ct);
-        response.EnsureSuccessStatusCode();
-        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
-
+        string? uri = $"https://management.azure.com{accountId}/deployments?api-version=2024-10-01";
         var result = new List<JsonElement>();
-        if (doc.RootElement.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.Array)
+
+        while (!string.IsNullOrEmpty(uri))
         {
-            foreach (var d in value.EnumerateArray())
-                result.Add(d.Clone());
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            await AuthorizeAsync(request, ArmScope, ct);
+
+            using var response = await _http.SendAsync(request, ct);
+            response.EnsureSuccessStatusCode();
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+
+            if (doc.RootElement.TryGetProperty("value", out var value) && value.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var d in value.EnumerateArray())
+                    result.Add(d.Clone());
+            }
+
+            uri = doc.RootElement.TryGetProperty("nextLink", out var next) && next.ValueKind == JsonValueKind.String
+                ? next.GetString()
+                : null;
         }
         return result;
     }

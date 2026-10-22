@@ -26,10 +26,18 @@ var app = builder.Build();
 app.Use(async (ctx, next) =>
 {
     var path = ctx.Request.Path.Value ?? "";
-    if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(config.ApiKey))
+    if (path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
     {
-        var provided = ctx.Request.Headers["X-Api-Key"].ToString();
-        if (!string.Equals(provided, config.ApiKey, StringComparison.Ordinal))
+        // Fail closed: never serve token data if no key has been configured.
+        if (string.IsNullOrEmpty(config.ApiKey))
+        {
+            ctx.Response.StatusCode = 503;
+            await ctx.Response.WriteAsJsonAsync(new { error = "REPORTS_API_KEY is not configured on the app." });
+            return;
+        }
+        var provided = System.Text.Encoding.UTF8.GetBytes(ctx.Request.Headers["X-Api-Key"].ToString());
+        var expected = System.Text.Encoding.UTF8.GetBytes(config.ApiKey);
+        if (!System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(provided, expected))
         {
             ctx.Response.StatusCode = 401;
             await ctx.Response.WriteAsJsonAsync(new { error = "Invalid or missing X-Api-Key." });

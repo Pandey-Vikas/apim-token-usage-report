@@ -39,6 +39,11 @@ public sealed class AzCli
 
         if (UseShell)
         {
+            // Arguments are re-parsed by cmd.exe; refuse shell metacharacters (command injection).
+            foreach (var a in args)
+                if (a.IndexOfAny(new[] { '&', '|', '<', '>', '^', '%', '"', '\r', '\n' }) >= 0)
+                    throw new AzCliException("Argument contains unsupported characters.");
+
             // Invoke via cmd so PATHEXT resolves az.cmd reliably.
             psi.ArgumentList.Add("/c");
             psi.ArgumentList.Add(Command);

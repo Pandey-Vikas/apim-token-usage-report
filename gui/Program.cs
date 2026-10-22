@@ -9,6 +9,27 @@ builder.Services.AddSingleton<Deployer>();
 builder.Services.AddHttpClient();
 
 var app = builder.Build();
+
+// The portal controls your Azure login and deployments, so only allow genuine local browser
+// access: reject foreign Host headers (DNS rebinding) and cross-site state-changing requests (CSRF).
+app.Use(async (ctx, next) =>
+{
+    static bool IsLocalHost(string? host) =>
+        host is not null && (host.Equals("127.0.0.1", StringComparison.Ordinal) ||
+                             host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                             host.Equals("[::1]", StringComparison.Ordinal));
+
+    var origin = ctx.Request.Headers.Origin.ToString();
+    var originOk = string.IsNullOrEmpty(origin) ||
+                   (Uri.TryCreate(origin, UriKind.Absolute, out var o) && IsLocalHost(o.IsLoopback ? o.Host : null));
+    if (!IsLocalHost(ctx.Request.Host.Host) || !originOk)
+    {
+        ctx.Response.StatusCode = 403;
+        await ctx.Response.WriteAsync("Forbidden: portal is local-only.");
+        return;
+    }
+    await next();
+});
 app.UseDefaultFiles();
 app.UseStaticFiles(new StaticFileOptions
 {

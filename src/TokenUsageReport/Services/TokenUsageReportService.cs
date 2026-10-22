@@ -81,9 +81,17 @@ public sealed class TokenUsageReportService
         Uri? blobUri = null;
         if (upload && _blob is not null)
         {
-            Console.WriteLine($"Uploading report to container '{_config.Container}' as '{blobName}'...");
-            blobUri = await _blob.UploadAsync(blobName, csv, ct);
-            Console.WriteLine($"Report written: {blobUri}");
+            // A storage/network/RBAC problem must not lose a report that was generated successfully.
+            try
+            {
+                Console.WriteLine($"Uploading report to container '{_config.Container}' as '{blobName}'...");
+                blobUri = await _blob.UploadAsync(blobName, csv, ct);
+                Console.WriteLine($"Report written: {blobUri}");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Console.WriteLine($"WARN: blob upload failed (report still returned): {ex.Message}");
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(_config.OutputFile))
@@ -92,6 +100,6 @@ public sealed class TokenUsageReportService
             Console.WriteLine($"Report written to file: {_config.OutputFile}");
         }
 
-        return new ReportResult(reportDate, enriched.Count, csv, blobName, blobUri);
+        return new ReportResult(reportDate, enriched.Count, csv, blobUri is null ? null : blobName, blobUri);
     }
 }

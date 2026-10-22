@@ -26,10 +26,11 @@ Contents of this repo:
 5. [Using the API](#using-the-api)
 6. [Connect Power BI](#connect-power-bi)
 7. [Report columns](#report-columns)
-8. [Configuration reference](#configuration-reference)
-9. [Run locally](#run-locally)
-10. [Update / redeploy / uninstall](#update--redeploy--uninstall)
-11. [Troubleshooting](#troubleshooting)
+8. [Networking & storage](#networking--storage-read-before-a-production-rollout)
+9. [Application settings reference](#application-settings-reference)
+10. [Run locally](#run-locally)
+11. [Update / redeploy / uninstall](#update--redeploy--uninstall)
+12. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -267,7 +268,33 @@ curl.exe -H "X-Api-Key: <key>" "https://<app>.azurewebsites.net/api/report.csv?l
 
 ---
 
-## Configuration reference
+## Networking & storage (read before a production rollout)
+
+**Default mode needs no storage account and no private networking.** Check these points if something does not work:
+
+| Area | What is required | Symptom if missing |
+|------|------------------|--------------------|
+| Inbound to the app | App must be reachable over HTTPS from the caller (portal machine / Power BI service). Do not enable *private-only* access or IP restrictions that exclude them. | Timeouts / 403 from `*.azurewebsites.net` |
+| Outbound from the app | `login.microsoftonline.com`, `management.azure.com`, `api.applicationinsights.io` / `api.loganalytics.io` over 443. | Report call returns 500 with a connection error |
+| Application Insights network isolation | If the component (or its Log Analytics workspace) has **query access set to Disabled / uses a private link scope (AMPLS)**, the app cannot query it from the public internet. Either set query access to *Enabled*, or add VNet integration + a private endpoint to the AMPLS. | 403 / "public network access disabled" from the Monitor query |
+| Subscription scope of `Reader` | The deploy grants **Reader on the deployment subscription only**. Model/account/SKU columns for Azure OpenAI accounts in *other* subscriptions stay **blank** (token numbers are still correct). Grant `Reader` to the app identity on those subscriptions/management group too. | Blank ModelName / AccountName / SkuName columns |
+| Local portal | Runs only on `127.0.0.1`; foreign Host/Origin requests are rejected. Run it on the same machine as your browser. | `403 Forbidden: portal is local-only` when browsed via another hostname |
+
+### Optional blob persistence (off by default)
+
+Only enable this if you need a stored history of daily CSVs. The deploy script does **not** create storage or assign storage roles, so do it explicitly:
+
+1. Create a storage account + container (`token-reports`).
+2. Grant the app's managed identity **Storage Blob Data Contributor** on the storage account (RBAC can take a few minutes).
+3. Set `STORAGE_BLOB_ENDPOINT=https://<account>.blob.core.windows.net/` (and optionally `REPORT_CONTAINER`) on the App Service.
+4. If the storage account blocks public access, add **VNet integration** to the app and a **private endpoint** (`blob`) with private DNS (`privatelink.blob.core.windows.net`) so the app can reach it.
+
+When enabled the app writes a daily CSV at 06:00 UTC (`REPORT_SCHEDULE_HOUR_UTC`) and on `POST /api/run`, and lists them via `GET /api/reports`. A blob failure
+never loses a report: the CSV is still returned and the error is written to the app log (Log stream).
+
+---
+
+## Application settings reference
 
 Set automatically by the deploy script; override on the App Service (Settings → Environment variables) if needed:
 
@@ -325,6 +352,7 @@ Locally it authenticates with your `az login` / Visual Studio credentials, so yo
 | Role assignment fails (`AuthorizationFailed`) | You need Owner or User Access Administrator on the scope. |
 | `401/403` from App Insights or Resource Graph right after deploy | Role propagation delay — wait a few minutes and retry. |
 | `401 Unauthorized` from the API | Missing/incorrect `X-Api-Key` header. |
+| `503 REPORTS_API_KEY is not configured` | The API fails closed without a key. Set `REPORTS_API_KEY` on the app (the deploy script does this automatically). |
 | App Service plan "is a LINUX plan" error | This app needs a **Windows** plan; use a different `-PlanName` or delete the Linux plan. |
 | App name already taken | Pass a unique `-AppName` (or a different `-BaseName`). |
 | Empty report | No token metrics in the window; widen `lookbackHours` and confirm APIM emits metrics to this App Insights. |

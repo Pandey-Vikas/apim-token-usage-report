@@ -95,6 +95,7 @@ if ((az group exists --name $ResourceGroup) -eq "true") {
 } else {
     Write-Step "Creating resource group '$ResourceGroup' in $Location"
     az group create --name $ResourceGroup --location $Location --output none
+    if ($LASTEXITCODE -ne 0) { throw "Failed to create resource group '$ResourceGroup'." }
 }
 
 # --- App Service plan (Windows) --------------------------------------------

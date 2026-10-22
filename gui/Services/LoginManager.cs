@@ -135,7 +135,13 @@ public sealed partial class LoginManager
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        if (UseShell) { psi.ArgumentList.Add("/c"); psi.ArgumentList.Add(Command); }
+        if (UseShell)
+        {
+            foreach (var a in args)
+                if (a.IndexOfAny(new[] { '&', '|', '<', '>', '^', '%', '"', '\r', '\n' }) >= 0)
+                    throw new AzCliException("Argument contains unsupported characters.");
+            psi.ArgumentList.Add("/c"); psi.ArgumentList.Add(Command);
+        }
         foreach (var a in args) psi.ArgumentList.Add(a);
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
