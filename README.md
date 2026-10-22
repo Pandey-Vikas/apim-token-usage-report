@@ -64,7 +64,7 @@ on the subscription.
 | Requirement | Details |
 |-------------|---------|
 | Azure subscription | You need **Owner**, or **Contributor + User Access Administrator**, on the target subscription/resource group (the deploy creates resources **and assigns roles**). |
-| Application Insights component | Must already exist and be receiving APIM token metrics: `Prompt Tokens`, `Completion Tokens`, `Prompt Cached Tokens`, `Total Tokens`, with dimensions `Deployment`, `Subscription ID`, `Backend`. |
+| Application Insights component | Use an existing one, or let the portal/script **create a new one** (with a Log Analytics workspace). The component must receive APIM token metrics for reports to contain data: `Prompt Tokens`, `Completion Tokens`, `Prompt Cached Tokens`, `Total Tokens`, with dimensions `Deployment`, `Subscription ID`, `Backend`. A newly created component is empty until APIM is configured to emit them. |
 | Network | Outbound internet access to `*.azure.com`, `*.azurewebsites.net`, `login.microsoftonline.com`. |
 
 ### Tools on the machine you deploy from (Windows)
@@ -146,15 +146,18 @@ cd deploy
     -RunNow
 ```
 
+If you have no Application Insights yet, replace `-AppInsightsResourceId ...` with `-NewAppInsightsName "tokrpt-appi"` to create one.
+
 If script execution is blocked: `Set-ExecutionPolicy -Scope Process Bypass`.
 
 The script is **idempotent** (safe to re-run or resume after a failure) and will:
 
-1. Create/reuse the resource group.
-2. Create/reuse a **Windows** App Service plan (`B1` by default) and a Web App with a system-assigned identity.
-3. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription (and, with `-GrantAllSubscriptions`, on all your other subscriptions); enable public query access on the component if it was disabled.
-4. Publish the app and set a generated `REPORTS_API_KEY`.
-5. With `-RunNow`, call the API once to prove the report works.
+1. Create/reuse the resource group and register the required resource providers.
+2. Create/reuse the Application Insights component (+ Log Analytics workspace) when `-NewAppInsightsName` is given.
+3. Create/reuse a **Windows** App Service plan (`B1` by default) and a Web App with a system-assigned identity.
+4. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription (and, with `-GrantAllSubscriptions`, on all your other subscriptions); enable public query access on the component if it was disabled.
+5. Publish the app and set a generated `REPORTS_API_KEY`.
+6. With `-RunNow`, call the API once to prove the report works.
 
 ### Step 5 — Save the output
 
@@ -179,7 +182,8 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `-AppInsightsResourceId` | *(required)* | App Insights component to read metrics from |
+| `-AppInsightsResourceId` | *(one of these two is required)* | Existing App Insights component to read metrics from |
+| `-NewAppInsightsName` | – | Create a new App Insights component (+ Log Analytics workspace) with this name instead |
 | `-Location` | `eastus` | Azure region |
 | `-SubscriptionId` | current `az` subscription | Target subscription |
 | `-BaseName` | `tokrpt` | Prefix for generated resource names |
