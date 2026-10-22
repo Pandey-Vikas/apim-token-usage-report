@@ -206,6 +206,7 @@
 
     <label>Quick range <span class="muted">(UTC)</span></label>
     <div class="chips" id="rangeChips">
+      <button type="button" class="chip" data-range="today">Today (up to now)</button>
       <button type="button" class="chip" data-range="yesterday">Yesterday</button>
       <button type="button" class="chip" data-range="7">Last 7 days</button>
       <button type="button" class="chip" data-range="30">Last 30 days</button>
@@ -230,12 +231,14 @@
       <div>
         <button id="btnRunReport" class="primary">Run report now</button>
         <button id="btnListBlobs" class="secondary">Refresh list</button>
+        <button id="btnDiagnose" class="secondary">Why no data? (Diagnose)</button>
         <button id="btnSample" class="secondary">Show sample report</button>
       </div>
       <button class="secondary" id="btnViewerBack">← Back</button>
     </div>
 
     <div id="viewerStatus" class="status"></div>
+    <div id="diagBox" class="callout"></div>
 
     <label for="blobSelect" id="blobSelectLabel" class="hidden">Generated reports <span class="muted">(saved in this browser; newest first)</span></label>
     <div id="blobRow" class="hidden filerow">
@@ -252,6 +255,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=11"></script>
+<script src="app.js?v=12"></script>
 </body>
 </html>

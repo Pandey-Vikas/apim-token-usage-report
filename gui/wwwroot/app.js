@@ -790,9 +790,11 @@ async function runReport() {
       $('viewerStatus').textContent = r.error;
       return;
     }
+    const fmt = (s) => new Date(s).toISOString().replace('T', ' ').slice(0, 16);
+    const windowTxt = r.windowStartUtc ? `${fmt(r.windowStartUtc)} → ${fmt(r.windowEndUtc)} UTC` : `${startDate} → ${endDate} UTC`;
     if (r.empty || !r.csv) {
       $('viewerStatus').className = 'status info';
-      $('viewerStatus').innerHTML = `Report ran successfully, but <strong>no token metrics were found</strong> from ${startDate} through ${endDate} UTC. Once APIM emits <code>llm-emit-token-metric</code> data into this Application Insights, reports will have content. Click <strong>Show sample report</strong> to preview the format.`;
+      $('viewerStatus').innerHTML = `Report ran successfully (window ${windowTxt}), but <strong>no token data was returned</strong>. Common reasons: the app's query doesn't match the kind of telemetry in this Application Insights (APIM metrics vs Foundry traces), the data is outside this window, or very recent telemetry is still being ingested (can take a few minutes). Click <strong>Why no data? (Diagnose)</strong> to see what is actually in Application Insights.`;
       return;
     }
     const reportName = `token-usage_${startDate}_to_${endDate}.csv`;
@@ -800,7 +802,7 @@ async function runReport() {
     renderReportList([]);
     $('blobSelect').value = `local|${reportName}`;
     $('viewerStatus').className = 'status ok';
-    $('viewerStatus').textContent = `✔ Report generated (${r.rowCount} row(s)) and saved as ${reportName}.`;
+    $('viewerStatus').textContent = `✔ Report generated (${r.rowCount} row(s), window ${windowTxt}) and saved as ${reportName}.`;
     csvToTable(r.csv, reportName);
   } catch (e) {
     $('viewerStatus').className = 'status err';
@@ -811,6 +813,58 @@ async function runReport() {
 }
 
 $('btnRunReport').addEventListener('click', runReport);
+$('btnDiagnose').addEventListener('click', diagnose);
+
+const QUERY_NAMES = {
+  'apim-token-metrics': 'APIM token metrics (default)',
+  'foundry-genai': 'Foundry / GenAI telemetry',
+  'genai-token-metric': 'GenAI token-usage metric',
+  custom: 'a custom query',
+};
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+async function diagnose() {
+  const box = $('diagBox');
+  box.className = 'hint callout';
+  box.innerHTML = '<span class="spinner"></span>Inspecting the app\'s Application Insights (last 30 days)…';
+  $('btnDiagnose').disabled = true;
+  try {
+    const d = await api.post('/api/diagnose', {});
+    if (d.error) { box.className = 'hint callout warn'; box.textContent = d.error; return; }
+
+    const lines = [];
+    const inUse = QUERY_NAMES[d.queryInUse] || d.queryInUse;
+    lines.push(`<li>The deployed app currently uses the <strong>${esc(inUse)}</strong> query.</li>`);
+    if (d.hasApimMetrics) lines.push('<li>✔ Found <strong>APIM token metrics</strong> (Prompt/Completion/Total Tokens) in <code>customMetrics</code>.</li>');
+    if (d.genAiSpanCount > 0) lines.push(`<li>✔ Found <strong>${esc(d.genAiSpanCount)} Foundry/GenAI span(s)</strong> with token counts in <code>dependencies</code> (${esc(String(d.genAiSpanFirst).slice(0, 16))} → ${esc(String(d.genAiSpanLast).slice(0, 16))} UTC).</li>`);
+    if (d.hasGenAiMetric) lines.push('<li>✔ Found the OpenTelemetry metric <code>gen_ai.client.token.usage</code> in <code>customMetrics</code>.</li>');
+    if (!d.hasApimMetrics && !(d.genAiSpanCount > 0) && !d.hasGenAiMetric) lines.push('<li>✘ No recognised token data in this Application Insights in the last 30 days.</li>');
+
+    let verdict, cls;
+    if (!d.recommended) {
+      cls = 'warn';
+      verdict = 'Nothing the report knows how to read was found. Check that this is the Application Insights your APIM / Foundry project writes to, that traffic has run recently (ingestion can lag a few minutes), then look at the token-related fields below to write a custom query.';
+    } else if (d.recommended === d.queryInUse) {
+      cls = 'good';
+      verdict = 'The app\'s query matches the data. If the report is still empty, widen the date range (use <em>Last 7 days</em> / <em>Today</em>) and retry in a few minutes.';
+    } else {
+      cls = 'warn';
+      verdict = `<strong>Mismatch:</strong> your data fits the <strong>${esc(QUERY_NAMES[d.recommended] || d.recommended)}</strong> query, but the app is running ${esc(inUse)}. Redeploy and, in <em>Advanced: report query</em>, choose that template.`;
+    }
+
+    const names = (d.metrics || []).slice(0, 12).map((m) => `<code>${esc(m.name)}</code> (${esc(m.count)})`).join(', ');
+    const keys = (d.tokenKeys || []).map((k) => `<code>${esc(k.itemType)}.${esc(k.key)}</code> (${esc(k.count)})`).join(', ');
+    box.className = `hint callout ${cls}`;
+    box.innerHTML = `<ul style="margin:0 0 8px 18px;padding:0">${lines.join('')}</ul><div>${verdict}</div>` +
+      (names ? `<details style="margin-top:8px"><summary>Metrics present in Application Insights</summary>${names}</details>` : '') +
+      (keys ? `<details style="margin-top:6px"><summary>Token-related fields found (last 7 days)</summary>${keys}</details>` : '');
+  } catch (e) {
+    box.className = 'hint callout warn';
+    box.textContent = String(e);
+  } finally {
+    $('btnDiagnose').disabled = false;
+  }
+}
 $('btnListBlobs').addEventListener('click', listBlobs);
 $('btnLoadBlob').addEventListener('click', loadBlob);
 $('btnDownload').addEventListener('click', downloadCurrent);
@@ -834,6 +888,7 @@ function applyRange(kind) {
   const y = todayUtc.getUTCFullYear(), m = todayUtc.getUTCMonth(), d = todayUtc.getUTCDate();
   let start, end;
   if (kind === 'yesterday') { start = end = yesterdayUtc; }
+  else if (kind === 'today') { start = end = todayUtc; }
   else if (kind === 'thisMonth') { start = utcDate(y, m, 1); end = todayUtc; }
   else if (kind === 'lastMonth') { start = utcDate(y, m - 1, 1); end = utcDate(y, m, 0); }
   else { start = utcDate(y, m, d - (Number(kind) - 1)); end = todayUtc; }
@@ -851,7 +906,7 @@ document.querySelectorAll('#rangeChips .chip').forEach(c =>
 }));
 $('reportEndDate').max = iso(todayUtc);
 $('reportStartDate').max = iso(todayUtc);
-applyRange('yesterday');
+applyRange('7');
 
 // --- Landing (remembered deployment) ---------------------------------------
 function renderSummary(cfg) {

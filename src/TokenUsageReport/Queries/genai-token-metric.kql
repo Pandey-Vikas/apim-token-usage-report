@@ -1,0 +1,17 @@
+// GenAI token-usage metric (STARTING POINT - verify against your data before relying on it).
+// Reads the OpenTelemetry GenAI client metric "gen_ai.client.token.usage" (dimension gen_ai.token.type = input|output)
+// that some SDKs / Foundry tracing export to Application Insights as customMetrics.
+// The report window is applied by the app; do not add a time filter. The query MUST return these columns:
+//   SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+customMetrics
+| where name == 'gen_ai.client.token.usage'
+| extend TokenType = tostring(customDimensions['gen_ai.token.type']),
+         DeploymentName = coalesce(tostring(customDimensions['gen_ai.response.model']), tostring(customDimensions['gen_ai.request.model'])),
+         Backend = tostring(customDimensions['server.address'])
+| summarize PromptTokens = tolong(sumif(valueSum, TokenType == 'input')),
+            CompletionTokens = tolong(sumif(valueSum, TokenType == 'output')),
+            Calls = tolong(sumif(valueCount, TokenType == 'input'))
+    by DeploymentName, Backend
+| extend SubscriptionId = '', CachedTokens = long(0), TotalTokens = PromptTokens + CompletionTokens
+| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+| order by TotalTokens desc

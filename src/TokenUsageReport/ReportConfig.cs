@@ -94,6 +94,8 @@ public sealed class ReportConfig
         DateOnly? startDate = null,
         DateOnly? endDate = null)
     {
+        var now = DateTimeOffset.UtcNow;
+
         if (startDate.HasValue != endDate.HasValue)
             throw new ArgumentException("Both startDate and endDate must be provided.");
         if (startDate is not null && endDate is not null)
@@ -102,14 +104,18 @@ public sealed class ReportConfig
                 throw new ArgumentException("startDate must be on or before endDate.");
 
             var explicitStart = new DateTimeOffset(startDate.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-            var explicitEnd = new DateTimeOffset(endDate.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            var dayAfterEnd = new DateTimeOffset(endDate.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            // Include data right up to the moment of the request when the range reaches today.
+            var explicitEnd = dayAfterEnd > now ? now : dayAfterEnd;
+            if (explicitStart >= explicitEnd)
+                throw new ArgumentException("The selected date range is in the future.");
             return (explicitStart, explicitEnd);
         }
 
+        // Rolling window ending "now" (minus the optional offset) so the newest telemetry is always included.
         var lookback = lookbackHours is > 0 ? lookbackHours.Value : LookbackHours;
         var endOffset = endOffsetHours ?? EndOffsetHours;
-        var todayMidnightUtc = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
-        var end = todayMidnightUtc.AddHours(-endOffset);
+        var end = now.AddHours(-endOffset);
         var start = end.AddHours(-lookback);
         return (start, end);
     }

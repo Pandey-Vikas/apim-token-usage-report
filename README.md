@@ -193,7 +193,7 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 | `-AppName` | generated | Web App name (must be globally unique) |
 | `-PlanSku` | `B1` | App Service plan SKU (`F1` also works for on-demand use) |
 | `-LookbackHours` | `24` | Default report window size |
-| `-EndOffsetHours` | `0` | Hours subtracted from UTC midnight to end the window |
+| `-EndOffsetHours` | `0` | Hours before *now* at which the rolling report window ends (0 = up to the moment of the request) |
 | `-RunNow` | off | Generate a report once after deploy |
 | `-GrantAllSubscriptions` | off (ticked by default in the portal) | Also grant Reader on your other subscriptions in the **same tenant** (subscriptions in other tenants are skipped automatically) |
 | `-ReportQueryFile` | *(bundled default)* | Path to a `.kql` file that replaces the report query (see [Choosing the data source and query](#choosing-the-data-source-and-query)). Omit to use — or reset to — the default |
@@ -310,11 +310,17 @@ never loses a report: the CSV is still returned and the error is written to the 
 | Source | What writes the data | Which Application Insights | Query template |
 |--------|----------------------|----------------------------|----------------|
 | **APIM** (default) | The APIM `llm-emit-token-metric` policy → `customMetrics` (`Prompt Tokens`, `Completion Tokens`, …) | The one set as the **APIM logger** of your APIM instance | *APIM token metrics (default)* |
-| **Foundry / OpenAI tracing** (no APIM) | OpenTelemetry `gen_ai.*` spans from Foundry agents / the OpenAI SDK → `dependencies` | The one **connected to your Foundry project** | *Foundry / GenAI telemetry (starting point — verify)* |
+| **Foundry / OpenAI tracing** (no APIM) | OpenTelemetry `gen_ai.*` spans from Foundry agents / the OpenAI SDK → `dependencies`; or the metric `gen_ai.client.token.usage` → `customMetrics` | The one **connected to your Foundry project** | *Foundry / GenAI telemetry* or *GenAI token-usage metric* (both **starting points — verify**) |
 
 Linking a Foundry project to an Application Insights does **not** produce the APIM metrics the default query reads, so a freshly created, empty component gives empty reports until one of the two sources writes into it.
 
 **Recommended:** in the portal, choose **Use existing** and pick the component marked **★ APIM '…' logs here** — the portal detects which Application Insights each APIM instance logs to and preselects it. Use **Create new** only if you will then point your APIM logger (or Foundry connection) at the new component.
+
+### Report window and "empty report" diagnosis
+
+- A date range that includes **today** ends at the **moment of the request** (UTC), not at midnight, so the newest telemetry is included. `lookbackHours` (API / Power BI) is a rolling window ending now. The viewer shows the exact window used. The viewer's default range is *Last 7 days*; use **Today (up to now)** for the latest hours.
+- Application Insights can take a few minutes to ingest new telemetry, so very recent calls may not appear immediately.
+- If a report comes back empty, click **Why no data? (Diagnose)** in the report viewer. It inspects the app's Application Insights and tells you whether it holds APIM token metrics, Foundry/GenAI spans or the GenAI token metric, which query the app is running, and — if they don't match — which template to redeploy with.
 
 ### Editing the report query
 
@@ -342,7 +348,7 @@ Set automatically by the deploy script; override on the App Service (Settings �
 | `APPINSIGHTS_RESOURCE_ID` | ARM id of the App Insights component (required) |
 | `REPORTS_API_KEY` | API key required in the `X-Api-Key` header |
 | `REPORT_LOOKBACK_HOURS` | Default window size in hours (default `24`) |
-| `REPORT_END_OFFSET_HOURS` | Hours before UTC midnight to end the window (default `0`) |
+| `REPORT_END_OFFSET_HOURS` | Hours before *now* at which a rolling (`lookbackHours`) window ends (default `0` = right now) |
 | `REPORT_DATE` | Optional explicit report date `yyyy-MM-dd` (backfill / manual runs) |
 | `REPORT_QUERY_B64` | Optional custom KQL, base64-encoded UTF-8. Unset = bundled default query. Set by the portal / `-ReportQueryFile` |
 | `STORAGE_BLOB_ENDPOINT`, `REPORT_CONTAINER` | *Optional.* If set, the app also writes a daily CSV to Blob Storage (off by default; requires the app to reach the storage account) |

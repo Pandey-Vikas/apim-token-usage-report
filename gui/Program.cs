@@ -473,6 +473,8 @@ var queryMeta = new Dictionary<string, (string Name, string Description)>(String
         "Reads Prompt/Completion/Cached/Total Tokens metrics emitted by the APIM llm-emit-token-metric policy."),
     ["foundry-genai"] = ("Foundry / GenAI telemetry (starting point)",
         "Reads OpenTelemetry gen_ai.* spans from Foundry agents / Azure OpenAI SDK tracing. Verify against your data."),
+    ["genai-token-metric"] = ("GenAI token-usage metric (starting point)",
+        "Reads the OpenTelemetry metric gen_ai.client.token.usage exported to customMetrics. Verify against your data."),
 };
 string[] requiredColumns = { "SubscriptionId", "DeploymentName", "Backend", "PromptTokens", "CompletionTokens", "CachedTokens", "TotalTokens", "Calls" };
 
@@ -571,6 +573,114 @@ app.MapGet("/api/apim-links", async () =>
     }
     catch { /* az apim not available / no access — return what we have */ }
     return Results.Json(links);
+});
+
+// Runs a KQL query against an Application Insights component through ARM (as the signed-in user).
+async Task<(List<string> Cols, List<List<string>> Rows)> RunKqlAsync(string aiId, string query, string timespan)
+{
+    var file = Path.Combine(Path.GetTempPath(), $"tokrpt-q-{Guid.NewGuid():N}.json");
+    try
+    {
+        await File.WriteAllTextAsync(file, JsonSerializer.Serialize(new { query, timespan }));
+        var res = await az.JsonAsync(new[] { "rest", "--method", "post",
+            "--url", $"https://management.azure.com{aiId}/api/query?api-version=2014-12-01-preview",
+            "--body", $"@{file}" }, timeoutMs: 120_000);
+        var cols = new List<string>();
+        var rows = new List<List<string>>();
+        if (res is { ValueKind: JsonValueKind.Object } r
+            && (r.TryGetProperty("Tables", out var tables) || r.TryGetProperty("tables", out tables))
+            && tables.ValueKind == JsonValueKind.Array && tables.GetArrayLength() > 0)
+        {
+            var t = tables[0];
+            if ((t.TryGetProperty("Columns", out var c) || t.TryGetProperty("columns", out c)) && c.ValueKind == JsonValueKind.Array)
+                foreach (var col in c.EnumerateArray())
+                    cols.Add((col.TryGetProperty("ColumnName", out var n) || col.TryGetProperty("name", out n)) ? n.GetString() ?? "" : "");
+            if ((t.TryGetProperty("Rows", out var rw) || t.TryGetProperty("rows", out rw)) && rw.ValueKind == JsonValueKind.Array)
+                foreach (var row in rw.EnumerateArray())
+                    rows.Add(row.EnumerateArray().Select(v => v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : v.ToString()).ToList());
+        }
+        return (cols, rows);
+    }
+    finally { try { File.Delete(file); } catch { /* ignore */ } }
+}
+
+// "Why is my report empty?" — inspects the deployed app's Application Insights and tells what token data actually exists.
+app.MapPost("/api/diagnose", async () =>
+{
+    var cfg = LoadConfig();
+    string? Cfg(string k) => cfg.ValueKind == JsonValueKind.Object && cfg.TryGetProperty(k, out var v) ? v.GetString() : null;
+    var appName = Cfg("appName"); var rg = Cfg("resourceGroup"); var sub = Cfg("subscriptionId");
+    var safe = new System.Text.RegularExpressions.Regex(@"^[A-Za-z0-9._()-]+$");
+    if (string.IsNullOrEmpty(appName) || string.IsNullOrEmpty(rg) || string.IsNullOrEmpty(sub)
+        || !safe.IsMatch(appName) || !safe.IsMatch(rg) || !safe.IsMatch(sub))
+        return Results.Json(new { error = "No deployed app is remembered on this machine yet. Deploy first (or use the deployment that created the app)." }, statusCode: 400);
+
+    try
+    {
+        // What the app really uses (authoritative): its Application Insights id and whether a custom query is set.
+        var settings = await az.JsonAsync(new[] { "webapp", "config", "appsettings", "list",
+            "--name", appName, "--resource-group", rg, "--subscription", sub }, timeoutMs: 60_000);
+        string? aiId = null, queryB64 = null;
+        if (settings is { ValueKind: JsonValueKind.Array })
+            foreach (var s in settings.Value.EnumerateArray())
+            {
+                var n = s.TryGetProperty("name", out var nn) ? nn.GetString() : null;
+                var v = s.TryGetProperty("value", out var vv) ? vv.GetString() : null;
+                if (n == "APPINSIGHTS_RESOURCE_ID") aiId = v;
+                if (n == "REPORT_QUERY_B64") queryB64 = v;
+            }
+        if (string.IsNullOrEmpty(aiId)) return Results.Json(new { error = "The app has no APPINSIGHTS_RESOURCE_ID setting." }, statusCode: 400);
+
+        string queryInUse = "apim-token-metrics";
+        if (!string.IsNullOrEmpty(queryB64))
+        {
+            queryInUse = "custom";
+            try
+            {
+                var used = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(queryB64)).Replace("\r\n", "\n").Trim();
+                foreach (var f in Directory.GetFiles(queriesDir, "*.kql"))
+                    if (File.ReadAllText(f).Replace("\r\n", "\n").Trim() == used) { queryInUse = Path.GetFileNameWithoutExtension(f); break; }
+            }
+            catch { /* keep "custom" */ }
+        }
+
+        var metrics = await RunKqlAsync(aiId, "customMetrics | summarize n=count(), lastSeen=max(timestamp) by name | order by n desc | take 40", "P30D");
+        var spans = await RunKqlAsync(aiId,
+            "dependencies | where isnotempty(tostring(customDimensions['gen_ai.usage.input_tokens'])) or isnotempty(tostring(customDimensions['gen_ai.usage.output_tokens'])) | summarize n=count(), firstSeen=min(timestamp), lastSeen=max(timestamp)", "P30D");
+        var keys = await RunKqlAsync(aiId,
+            "union (dependencies | extend itemType='dependencies' | project itemType, customDimensions | take 20000), " +
+            "(traces | extend itemType='traces' | project itemType, customDimensions | take 20000), " +
+            "(requests | extend itemType='requests' | project itemType, customDimensions | take 20000), " +
+            "(customEvents | extend itemType='customEvents' | project itemType, customDimensions | take 20000), " +
+            "(customMetrics | extend itemType='customMetrics' | project itemType, customDimensions | take 20000) " +
+            "| where isnotempty(customDimensions) | extend keys = bag_keys(customDimensions) | mv-expand keys | extend key = tostring(keys) " +
+            "| where key contains 'token' | summarize n=count() by itemType, key | order by n desc | take 25", "P7D");
+
+        var metricNames = metrics.Rows.Select(r => r[0]).ToList();
+        var hasApim = metricNames.Any(m => m.Equals("Prompt Tokens", StringComparison.OrdinalIgnoreCase) || m.Equals("Total Tokens", StringComparison.OrdinalIgnoreCase));
+        var hasGenAiMetric = metricNames.Any(m => m.Equals("gen_ai.client.token.usage", StringComparison.OrdinalIgnoreCase));
+        var spanCount = spans.Rows.Count > 0 && long.TryParse(spans.Rows[0][0], out var sc) ? sc : 0;
+
+        string recommended = hasApim ? "apim-token-metrics" : spanCount > 0 ? "foundry-genai" : hasGenAiMetric ? "genai-token-metric" : "";
+        return Results.Json(new
+        {
+            appInsightsId = aiId,
+            queryInUse,
+            recommended,
+            hasApimMetrics = hasApim,
+            hasGenAiMetric,
+            genAiSpanCount = spanCount,
+            genAiSpanFirst = spans.Rows.Count > 0 && spans.Rows[0].Count > 1 ? spans.Rows[0][1] : null,
+            genAiSpanLast = spans.Rows.Count > 0 && spans.Rows[0].Count > 2 ? spans.Rows[0][2] : null,
+            metrics = metrics.Rows.Select(r => new { name = r[0], count = r[1], last = r.Count > 2 ? r[2] : "" }),
+            tokenKeys = keys.Rows.Select(r => new { itemType = r[0], key = r[1], count = r[2] }),
+        });
+    }
+    catch (Exception ex)
+    {
+        var msg = ex.Message; if (msg.Length > 500) msg = msg[..500] + "…";
+        return Results.Json(new { error = msg }, statusCode: 500);
+    }
 });
 
 // --- Prerequisites ---------------------------------------------------------

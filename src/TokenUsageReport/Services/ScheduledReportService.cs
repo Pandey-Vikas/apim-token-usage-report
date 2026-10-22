@@ -32,7 +32,9 @@ public sealed class ScheduledReportService : BackgroundService
 
             try
             {
-                var result = await _report.GenerateAsync(upload: true, null, null, stoppingToken);
+                var y = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(-1));
+                // The stored daily report is always the previous full UTC day.
+                var result = await _report.GenerateAsync(upload: true, null, null, stoppingToken, y, y);
                 _logger.LogInformation("Scheduled report {Date}: {Rows} row(s).", result.ReportDate, result.RowCount);
             }
             catch (Exception ex)

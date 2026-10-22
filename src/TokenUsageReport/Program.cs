@@ -71,6 +71,8 @@ static async Task<IResult> RunReport(
             rowCount = result.RowCount,
             empty = result.RowCount == 0,
             blobName = result.BlobName,
+            windowStartUtc = result.WindowStart,
+            windowEndUtc = result.WindowEnd,
             csv = result.Csv,
         });
     }

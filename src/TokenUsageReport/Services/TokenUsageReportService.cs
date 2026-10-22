@@ -4,7 +4,8 @@ using TokenUsageReport.Models;
 namespace TokenUsageReport.Services;
 
 /// <summary>The outcome of generating a report.</summary>
-public sealed record ReportResult(string ReportDate, int RowCount, string Csv, string? BlobName, Uri? BlobUri);
+public sealed record ReportResult(string ReportDate, int RowCount, string Csv, string? BlobName, Uri? BlobUri,
+    DateTimeOffset WindowStart, DateTimeOffset WindowEnd);
 
 /// <summary>
 /// Orchestrates the token usage report:
@@ -48,7 +49,7 @@ public sealed class TokenUsageReportService
         Console.WriteLine($"  {tokenRows.Count} token row(s) returned.");
 
         if (tokenRows.Count == 0)
-            return new ReportResult(reportDate, 0, CsvWriter.Build(Enumerable.Empty<EnrichedRow>()), null, null);
+            return new ReportResult(reportDate, 0, CsvWriter.Build(Enumerable.Empty<EnrichedRow>()), null, null, start, end);
 
         var inventory = await _inventory.BuildInventoryAsync(ct);
         Console.WriteLine($"  {inventory.Count} deployment(s) discovered.");
@@ -100,6 +101,6 @@ public sealed class TokenUsageReportService
             Console.WriteLine($"Report written to file: {_config.OutputFile}");
         }
 
-        return new ReportResult(reportDate, enriched.Count, csv, blobUri is null ? null : blobName, blobUri);
+        return new ReportResult(reportDate, enriched.Count, csv, blobUri is null ? null : blobName, blobUri, start, end);
     }
 }
