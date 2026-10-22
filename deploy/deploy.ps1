@@ -105,7 +105,13 @@ if (-not $account) { throw "Not logged in. Run 'az login' first." }
 if ($SubscriptionId) { az account set --subscription $SubscriptionId | Out-Null }
 $account = az account show | ConvertFrom-Json
 $SubscriptionId = $account.id
-Write-Host "Subscription: $($account.name) ($SubscriptionId)"
+Write-Host "Subscription: $($account.name) ($SubscriptionId)  tenant: $($account.tenantId)"
+
+# Fail early with a clear message if the CLI session has no token for this subscription's tenant (cross-tenant).
+$tokenCheck = az account get-access-token --subscription $SubscriptionId --query expiresOn -o tsv 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw "No valid Azure sign-in for subscription $SubscriptionId (tenant $($account.tenantId)). Sign in to that tenant first: 'az login --tenant $($account.tenantId)' (portal: choose the tenant and click 'Switch tenant'). Details: $(($tokenCheck | Out-String).Trim().Split([char]10)[0])"
+}
 
 # --- Resource group --------------------------------------------------------
 if ((az group exists --name $ResourceGroup) -eq "true") {
@@ -216,6 +222,17 @@ az webapp config appsettings set --name $AppName --resource-group $ResourceGroup
 if ($LASTEXITCODE -ne 0) { throw "Failed to set application settings on '$AppName'." }
 
 # --- Role assignments (idempotent + retry for identity propagation) ---------
+# Condense a verbose az error to "<Code>: <first sentence>" so the log stays readable.
+function Get-AzErrorSummary($Err) {
+    $text = ($Err | Out-String).Trim()
+    if ($text -match '\((\w+)\)\s*([^\r\n]*)') {
+        $msg = $Matches[2]; if ($msg.Length -gt 140) { $msg = $msg.Substring(0, 140) + '...' }
+        return "$($Matches[1]): $msg"
+    }
+    if ($text.Length -gt 200) { return $text.Substring(0, 200) + '...' }
+    return $text
+}
+
 function Grant-Role([string] $Role, [string] $Scope, [int] $Retries = 6) {
     $existing = az role assignment list --assignee $principalId --role $Role --scope $Scope --query "[0].id" -o tsv 2>$null
     if ($existing) { Write-Host "  '$Role' already assigned"; return }
@@ -225,9 +242,11 @@ function Grant-Role([string] $Role, [string] $Scope, [int] $Retries = 6) {
             --assignee-principal-type ServicePrincipal --role $Role --scope $Scope --output none 2>&1
         if ($LASTEXITCODE -eq 0) { Write-Host "  granted '$Role'"; return }
         if ($lastErr -match 'already exists|RoleAssignmentExists') { Write-Host "  '$Role' already assigned"; return }
-        Start-Sleep -Seconds 10
+        # Permission / tenant problems never fix themselves — only identity-propagation errors are worth retrying.
+        if ($lastErr -match 'AuthorizationFailed|InvalidAuthenticationTokenTenant|LinkedAuthorizationFailed|SubscriptionNotFound') { break }
+        if ($i -lt $Retries) { Start-Sleep -Seconds 10 }
     }
-    throw "Failed to assign role '$Role' on scope '$Scope'. Last error: $lastErr"
+    throw "Failed to assign role '$Role' on '$Scope'. $(Get-AzErrorSummary $lastErr)"
 }
 
 Write-Step "Assigning RBAC roles to the app identity"
@@ -235,13 +254,21 @@ Grant-Role "Monitoring Reader"  $AppInsightsResourceId
 Grant-Role "Reader"             "/subscriptions/$SubscriptionId"
 
 if ($GrantAllSubscriptions) {
-    Write-Step "Granting Reader on all other accessible subscriptions (for cross-subscription enrichment)"
-    $otherSubs = az account list --query "[?state=='Enabled' && id!='$SubscriptionId'].id" -o tsv 2>$null
-    foreach ($sub in $otherSubs) {
-        if (-not $sub) { continue }
-        try { Grant-Role "Reader" "/subscriptions/$sub" -Retries 1 }
-        catch { Write-Warning "  Skipped subscription ${sub}: $($_.Exception.Message)" }
+    # A managed identity lives in ONE tenant and can only be granted roles in subscriptions of that same tenant,
+    # so subscriptions from other tenants you are signed in to are skipped by design (not an error).
+    Write-Step "Granting Reader on your other subscriptions in tenant $($account.tenantId) (cross-subscription enrichment)"
+    $allSubs = az account list --query "[?state=='Enabled'].{id:id,tenantId:tenantId}" -o json 2>$null | ConvertFrom-Json
+    $sameTenant = @($allSubs | Where-Object { $_.tenantId -eq $account.tenantId -and $_.id -ne $SubscriptionId })
+    $otherTenantCount = @($allSubs | Where-Object { $_.tenantId -ne $account.tenantId }).Count
+    if ($otherTenantCount -gt 0) {
+        Write-Host "  skipping $otherTenantCount subscription(s) that belong to other tenants (the app's identity can't access them)"
     }
+    $granted = 0; $noAccess = 0
+    foreach ($s in $sameTenant) {
+        try { Grant-Role "Reader" "/subscriptions/$($s.id)" -Retries 1; $granted++ }
+        catch { $noAccess++; Write-Host "  skipped $($s.id): $($_.Exception.Message)" }
+    }
+    Write-Host "  done: $granted subscription(s) processed, $noAccess skipped (no permission to assign roles there)"
 }
 
 # --- Make sure Application Insights can be queried over the public endpoint (best effort) -----

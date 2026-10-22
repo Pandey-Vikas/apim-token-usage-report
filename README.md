@@ -155,7 +155,7 @@ The script is **idempotent** (safe to re-run or resume after a failure) and will
 1. Create/reuse the resource group and register the required resource providers.
 2. Create/reuse the Application Insights component (+ Log Analytics workspace) when `-NewAppInsightsName` is given.
 3. Create/reuse a **Windows** App Service plan (`B1` by default) and a Web App with a system-assigned identity.
-4. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription (and, with `-GrantAllSubscriptions`, on all your other subscriptions); enable public query access on the component if it was disabled.
+4. Grant the identity **Monitoring Reader** on the App Insights component and **Reader** on the subscription (and, with `-GrantAllSubscriptions`, on your other subscriptions **in the same tenant**); enable public query access on the component if it was disabled.
 5. Publish the app and set a generated `REPORTS_API_KEY`.
 6. With `-RunNow`, call the API once to prove the report works.
 
@@ -194,7 +194,7 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 | `-LookbackHours` | `24` | Default report window size |
 | `-EndOffsetHours` | `0` | Hours subtracted from UTC midnight to end the window |
 | `-RunNow` | off | Generate a report once after deploy |
-| `-GrantAllSubscriptions` | off (ticked by default in the portal) | Also grant Reader on all other accessible subscriptions |
+| `-GrantAllSubscriptions` | off (ticked by default in the portal) | Also grant Reader on your other subscriptions in the **same tenant** (subscriptions in other tenants are skipped automatically) |
 
 ---
 
@@ -284,7 +284,7 @@ curl.exe -H "X-Api-Key: <key>" "https://<app>.azurewebsites.net/api/report.csv?l
 | Inbound to the app | App must be reachable over HTTPS from the caller (portal machine / Power BI service). Do not enable *private-only* access or IP restrictions that exclude them. | Timeouts / 403 from `*.azurewebsites.net` |
 | Outbound from the app | `login.microsoftonline.com`, `management.azure.com`, `api.applicationinsights.io` / `api.loganalytics.io` over 443. | Report call returns 500 with a connection error |
 | Application Insights network isolation | The deploy **automatically switches on public query access** for the component if it was disabled (POC convenience). If it is behind a private link scope (AMPLS) that still blocks the app, add VNet integration + a private endpoint to the AMPLS. | 403 / "public network access disabled" from the Monitor query |
-| Reader on other subscriptions | In the portal, leave **"Grant read access on all my subscriptions"** ticked (default) — or pass `-GrantAllSubscriptions` to `deploy.ps1`. The deploy then grants Reader on every subscription you can access, so no manual roles are needed. Without it, model/account/SKU columns for accounts in other subscriptions stay blank (token numbers are still correct). | Blank ModelName / AccountName / SkuName columns |
+| Reader on other subscriptions | In the portal, leave **"Grant read access on all my other subscriptions in this tenant"** ticked (default) — or pass `-GrantAllSubscriptions` to `deploy.ps1`. The deploy then grants Reader on every other subscription in the app's tenant where you are allowed to assign roles; the log lists any it skipped. **Subscriptions in other tenants can never be granted** (a managed identity belongs to a single tenant), so Azure OpenAI accounts there show blank model/account/SKU columns — token numbers are still correct. | Blank ModelName / AccountName / SkuName columns |
 | Local portal | Runs only on `127.0.0.1`; foreign Host/Origin requests are rejected. Run it on the same machine as your browser. | `403 Forbidden: portal is local-only` when browsed via another hostname |
 
 ### Optional blob persistence (off by default)
@@ -358,6 +358,7 @@ Locally it authenticates with your `az login` / Visual Studio credentials, so yo
 | Script blocked by execution policy | `Set-ExecutionPolicy -Scope Process Bypass` |
 | Role assignment fails (`AuthorizationFailed`) | You need Owner or User Access Administrator on the scope. |
 | `401/403` from App Insights or Resource Graph right after deploy | Role propagation delay — wait a few minutes and retry. |
+| `InvalidAuthenticationTokenTenant` / "wrong issuer" | The subscription belongs to a different tenant than your active sign-in. Choose that tenant on the portal's sign-in step and click **Switch tenant** (or `az login --tenant <id>`). The deploy script now checks this up front and skips other-tenant subscriptions when granting roles. |
 | `401 Unauthorized` from the API | Missing/incorrect `X-Api-Key` header. |
 | `503 REPORTS_API_KEY is not configured` | The API fails closed without a key. Set `REPORTS_API_KEY` on the app (the deploy script does this automatically). |
 | App Service plan "is a LINUX plan" error | This app needs a **Windows** plan; use a different `-PlanName` or delete the Linux plan. |
