@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Token Usage Report — Deploy</title>
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
 <div class="app">
@@ -169,16 +169,27 @@
 
     <div id="viewerAppInfo" class="summary" style="margin-bottom:16px"></div>
 
+    <label>Quick range <span class="muted">(UTC)</span></label>
+    <div class="chips" id="rangeChips">
+      <button type="button" class="chip" data-range="yesterday">Yesterday</button>
+      <button type="button" class="chip" data-range="7">Last 7 days</button>
+      <button type="button" class="chip" data-range="30">Last 30 days</button>
+      <button type="button" class="chip" data-range="90">Last 90 days</button>
+      <button type="button" class="chip" data-range="thisMonth">This month</button>
+      <button type="button" class="chip" data-range="lastMonth">Last month</button>
+    </div>
+
     <div class="grid2">
       <div>
         <label for="reportStartDate">Start date <span class="muted">(UTC)</span></label>
-        <input type="date" id="reportStartDate">
+        <input type="date" id="reportStartDate" onclick="try{this.showPicker()}catch(e){}">
       </div>
       <div>
         <label for="reportEndDate">End date <span class="muted">(UTC, inclusive)</span></label>
-        <input type="date" id="reportEndDate">
+        <input type="date" id="reportEndDate" onclick="try{this.showPicker()}catch(e){}">
       </div>
     </div>
+    <div id="rangeSummary" class="hint"></div>
 
     <div class="footer" style="margin-top:16px">
       <div>
@@ -205,6 +216,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

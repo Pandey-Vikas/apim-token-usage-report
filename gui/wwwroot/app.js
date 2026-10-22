@@ -552,11 +552,42 @@ $('btnListBlobs').addEventListener('click', listBlobs);
 $('btnLoadBlob').addEventListener('click', loadBlob);
 $('btnSample').addEventListener('click', showSample);
 
-const todayUtc = new Date();
-const yesterdayUtc = new Date(todayUtc);
-yesterdayUtc.setUTCDate(yesterdayUtc.getUTCDate() - 1);
-$('reportStartDate').value = yesterdayUtc.toISOString().slice(0, 10);
-$('reportEndDate').value = yesterdayUtc.toISOString().slice(0, 10);
+const iso = (d) => d.toISOString().slice(0, 10);
+const utcDate = (y, m, d) => new Date(Date.UTC(y, m, d));
+const todayUtc = utcDate(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+const yesterdayUtc = utcDate(todayUtc.getUTCFullYear(), todayUtc.getUTCMonth(), todayUtc.getUTCDate() - 1);
+
+function updateRangeSummary() {
+  const s = $('reportStartDate').value, e = $('reportEndDate').value;
+  const box = $('rangeSummary');
+  if (!s || !e) { box.textContent = 'Pick a start and end date, or use a quick range.'; return; }
+  if (s > e) { box.textContent = 'Start date must be on or before the end date.'; return; }
+  const days = Math.round((Date.parse(e) - Date.parse(s)) / 86400000) + 1;
+  box.textContent = `Selected: ${s} → ${e} (${days} day${days === 1 ? '' : 's'}, UTC)`;
+}
+
+function applyRange(kind) {
+  const y = todayUtc.getUTCFullYear(), m = todayUtc.getUTCMonth(), d = todayUtc.getUTCDate();
+  let start, end;
+  if (kind === 'yesterday') { start = end = yesterdayUtc; }
+  else if (kind === 'thisMonth') { start = utcDate(y, m, 1); end = todayUtc; }
+  else if (kind === 'lastMonth') { start = utcDate(y, m - 1, 1); end = utcDate(y, m, 0); }
+  else { start = utcDate(y, m, d - (Number(kind) - 1)); end = todayUtc; }
+  $('reportStartDate').value = iso(start);
+  $('reportEndDate').value = iso(end);
+  document.querySelectorAll('#rangeChips .chip').forEach(c => c.classList.toggle('active', c.dataset.range === kind));
+  updateRangeSummary();
+}
+
+document.querySelectorAll('#rangeChips .chip').forEach(c =>
+  c.addEventListener('click', () => applyRange(c.dataset.range)));
+['reportStartDate', 'reportEndDate'].forEach(id => $(id).addEventListener('input', () => {
+  document.querySelectorAll('#rangeChips .chip').forEach(c => c.classList.remove('active'));
+  updateRangeSummary();
+}));
+$('reportEndDate').max = iso(todayUtc);
+$('reportStartDate').max = iso(todayUtc);
+applyRange('yesterday');
 
 // --- Landing (remembered deployment) ---------------------------------------
 function renderSummary(cfg) {

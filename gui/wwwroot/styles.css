@@ -24,6 +24,12 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
 button:disabled { opacity: .5; cursor: not-allowed; }
 
 select, input[type=text], input[type=number], input[type=date] { width: 100%; background: var(--bg); border:1px solid var(--border); border-radius: 8px; padding: 12px 14px; color: var(--text); font: inherit; font-size: 15px; }
+input[type=date] { color-scheme: dark; cursor: pointer; }
+input[type=date]::-webkit-calendar-picker-indicator { cursor: pointer; width: 20px; height: 20px; opacity: 1; filter: invert(0.85); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+button.chip { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 999px; font-size: 13px; }
+button.chip:hover { border-color: var(--accent); }
+button.chip.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 label { display:block; margin: 16px 0 8px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing:.06em; font-weight: 600; }
 label.checkbox { display:flex; align-items:center; gap:10px; text-transform:none; letter-spacing:0; color:var(--text); font-size:15px; font-weight:400; margin-top:20px; }
 label.checkbox input { width:auto; transform: scale(1.2); }
