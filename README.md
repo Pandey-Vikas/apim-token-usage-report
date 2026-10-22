@@ -193,6 +193,27 @@ az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API
 
 ## Verify the deployment
 
+### Step-by-step check using the portal UI (no commands needed)
+
+The portal ([gui/](./gui)) is the easiest way to deploy **and** test. Start it with `cd gui; ./run.ps1`
+(it opens http://127.0.0.1:5099).
+
+| # | Where in the UI | What to do | Expected result |
+|---|-----------------|------------|-----------------|
+| 1 | Sign in to Azure | Choose browser or device-code login and sign in | Footer shows `Signed in as <your account>` |
+| 2 | Choose a subscription | Select the subscription that holds your App Insights | Step advances to resource groups |
+| 3 | Resource group | Pick an existing group or create a new one (pick a region) | Group is selected |
+| 4 | Configure & deploy | Select the Application Insights component, then click **Deploy to Azure** | Live log streams; ends with the **App URL** and **API key** |
+| 5 | Welcome back / **View reports →** | Open the report viewer (shown automatically on later launches) | Viewer shows App, App URL and Resource group |
+| 6 | **Show sample report** | Click it | A sample table appears — confirms the viewer works |
+| 7 | **Run report now** | Pick a start/end date (UTC) and click it (can take up to a minute) | Table of token usage, or a message *"no token metrics were found"* if APIM has not emitted data in that window |
+| 8 | Report table | Check PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls | Totals match the APIM traffic for that period |
+
+> **Quick test of the UI itself:** if step 7 says no data, widen the date range (e.g. the last 30 days).
+> Role assignments can take a few minutes after the first deploy — retry if you see an authorization error.
+
+### Step-by-step check using commands
+
 ```powershell
 $url = "https://<app>.azurewebsites.net"
 $key = "<api key>"
