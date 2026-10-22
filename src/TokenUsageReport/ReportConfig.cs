@@ -77,8 +77,24 @@ public sealed class ReportConfig
     }
 
     /// <summary>Computes the (startUtc, endUtc) query window.</summary>
-    public (DateTimeOffset Start, DateTimeOffset End) ComputeWindow(int? lookbackHours = null, int? endOffsetHours = null)
+    public (DateTimeOffset Start, DateTimeOffset End) ComputeWindow(
+        int? lookbackHours = null,
+        int? endOffsetHours = null,
+        DateOnly? startDate = null,
+        DateOnly? endDate = null)
     {
+        if (startDate.HasValue != endDate.HasValue)
+            throw new ArgumentException("Both startDate and endDate must be provided.");
+        if (startDate is not null && endDate is not null)
+        {
+            if (startDate > endDate)
+                throw new ArgumentException("startDate must be on or before endDate.");
+
+            var explicitStart = new DateTimeOffset(startDate.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            var explicitEnd = new DateTimeOffset(endDate.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+            return (explicitStart, explicitEnd);
+        }
+
         var lookback = lookbackHours is > 0 ? lookbackHours.Value : LookbackHours;
         var endOffset = endOffsetHours ?? EndOffsetHours;
         var todayMidnightUtc = new DateTimeOffset(DateTime.UtcNow.Date, TimeSpan.Zero);
@@ -88,11 +104,15 @@ public sealed class ReportConfig
     }
 
     /// <summary>The label used in the blob path/name (yyyy-MM-dd).</summary>
-    public string ResolveReportDate(int? lookbackHours = null, int? endOffsetHours = null)
+    public string ResolveReportDate(
+        int? lookbackHours = null,
+        int? endOffsetHours = null,
+        DateOnly? startDate = null,
+        DateOnly? endDate = null)
     {
         if (!string.IsNullOrWhiteSpace(ReportDateOverride))
             return ReportDateOverride!;
-        var (start, _) = ComputeWindow(lookbackHours, endOffsetHours);
+        var (start, _) = ComputeWindow(lookbackHours, endOffsetHours, startDate, endDate);
         return start.UtcDateTime.ToString("yyyy-MM-dd");
     }
 }

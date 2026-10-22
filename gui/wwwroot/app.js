@@ -505,13 +505,26 @@ async function showSample() {
 }
 
 async function runReport() {
+  const startDate = $('reportStartDate').value;
+  const endDate = $('reportEndDate').value;
+  if (!startDate || !endDate) {
+    $('viewerStatus').className = 'status err';
+    $('viewerStatus').textContent = 'Choose both a start date and an end date.';
+    return;
+  }
+  if (startDate > endDate) {
+    $('viewerStatus').className = 'status err';
+    $('viewerStatus').textContent = 'The start date must be on or before the end date.';
+    return;
+  }
+
   $('btnRunReport').disabled = true;
   $('viewerStatus').className = 'status info';
-  $('viewerStatus').innerHTML = '<span class="spinner"></span>Asking the app to generate a report now — it queries Application Insights with its managed identity (this can take up to a minute)…';
+  $('viewerStatus').innerHTML = `<span class="spinner"></span>Generating the ${startDate} through ${endDate} report from Application Insights (this can take up to a minute)…`;
   $('csvTableWrap').innerHTML = '';
   $('csvTitle').textContent = '';
   try {
-    const r = await api.post('/api/app-run', {});
+    const r = await api.post('/api/app-run', { startDate, endDate });
     if (r.error) {
       $('viewerStatus').className = 'status err';
       $('viewerStatus').textContent = r.error;
@@ -519,7 +532,7 @@ async function runReport() {
     }
     if (r.empty || !r.csv) {
       $('viewerStatus').className = 'status info';
-      $('viewerStatus').innerHTML = 'Report ran successfully, but <strong>no token metrics were found</strong> in the last 24-hour window — so there is nothing to report yet. Once APIM emits <code>llm-emit-token-metric</code> data into this Application Insights, reports will have content. Click <strong>Show sample report</strong> to preview the format.';
+      $('viewerStatus').innerHTML = `Report ran successfully, but <strong>no token metrics were found</strong> from ${startDate} through ${endDate} UTC. Once APIM emits <code>llm-emit-token-metric</code> data into this Application Insights, reports will have content. Click <strong>Show sample report</strong> to preview the format.`;
       return;
     }
     $('viewerStatus').className = 'status ok';
@@ -537,6 +550,12 @@ $('btnRunReport').addEventListener('click', runReport);
 $('btnListBlobs').addEventListener('click', listBlobs);
 $('btnLoadBlob').addEventListener('click', loadBlob);
 $('btnSample').addEventListener('click', showSample);
+
+const todayUtc = new Date();
+const yesterdayUtc = new Date(todayUtc);
+yesterdayUtc.setUTCDate(yesterdayUtc.getUTCDate() - 1);
+$('reportStartDate').value = yesterdayUtc.toISOString().slice(0, 10);
+$('reportEndDate').value = yesterdayUtc.toISOString().slice(0, 10);
 
 // --- Landing (remembered deployment) ---------------------------------------
 function renderSummary(cfg) {
@@ -581,4 +600,3 @@ async function init() {
   }
 }
 init();
-

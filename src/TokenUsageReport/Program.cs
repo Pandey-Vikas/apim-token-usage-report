@@ -45,11 +45,18 @@ app.MapGet("/healthz", () => Results.Json(new { ok = true, blob = app.Services.G
 // Generate a report on demand and return the CSV inline.
 // Optional query params let callers (portal / Power BI) request any window:
 //   ?lookbackHours=168&endOffsetHours=0  -> last 7 days
-static async Task<IResult> RunReport(TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, bool upload, CancellationToken ct)
+static async Task<IResult> RunReport(
+    TokenUsageReportService svc,
+    int? lookbackHours,
+    int? endOffsetHours,
+    DateOnly? startDate,
+    DateOnly? endDate,
+    bool upload,
+    CancellationToken ct)
 {
     try
     {
-        var result = await svc.GenerateAsync(upload, lookbackHours, endOffsetHours, ct);
+        var result = await svc.GenerateAsync(upload, lookbackHours, endOffsetHours, ct, startDate, endDate);
         return Results.Json(new
         {
             reportDate = result.ReportDate,
@@ -59,22 +66,27 @@ static async Task<IResult> RunReport(TokenUsageReportService svc, int? lookbackH
             csv = result.Csv,
         });
     }
+    catch (ArgumentException ex) { return Results.Json(new { error = ex.Message }, statusCode: 400); }
     catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
 }
 
 // POST /api/run — default window (from app settings); persists to blob if configured.
-app.MapPost("/api/run", (TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, CancellationToken ct) =>
-    RunReport(svc, lookbackHours, endOffsetHours, upload: true, ct));
+app.MapPost("/api/run", (TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, DateOnly? startDate, DateOnly? endDate, CancellationToken ct) =>
+    RunReport(svc, lookbackHours, endOffsetHours, startDate, endDate, upload: true, ct));
 
 // GET /api/report — flexible read-only generation (no blob write).
-app.MapGet("/api/report", (TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, CancellationToken ct) =>
-    RunReport(svc, lookbackHours, endOffsetHours, upload: false, ct));
+app.MapGet("/api/report", (TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, DateOnly? startDate, DateOnly? endDate, CancellationToken ct) =>
+    RunReport(svc, lookbackHours, endOffsetHours, startDate, endDate, upload: false, ct));
 
 // GET /api/report.csv — raw text/csv (Power BI Web connector friendly).
-app.MapGet("/api/report.csv", async (TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, CancellationToken ct) =>
+app.MapGet("/api/report.csv", async (TokenUsageReportService svc, int? lookbackHours, int? endOffsetHours, DateOnly? startDate, DateOnly? endDate, CancellationToken ct) =>
 {
-    var result = await svc.GenerateAsync(upload: false, lookbackHours, endOffsetHours, ct);
-    return Results.Text(result.Csv, "text/csv");
+    try
+    {
+        var result = await svc.GenerateAsync(upload: false, lookbackHours, endOffsetHours, ct, startDate, endDate);
+        return Results.Text(result.Csv, "text/csv");
+    }
+    catch (ArgumentException ex) { return Results.Json(new { error = ex.Message }, statusCode: 400); }
 });
 
 // Optional blob-backed history (only meaningful when a storage endpoint is configured).

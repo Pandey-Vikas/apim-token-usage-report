@@ -23,8 +23,8 @@ Every `/api/*` call requires an **`X-Api-Key`** header (a key generated at deplo
 | Endpoint | Purpose |
 |----------|---------|
 | `POST /api/run` | Generate the default-window report and return the CSV (JSON) |
-| `GET /api/report?lookbackHours=N&endOffsetHours=M` | Generate any window (JSON) |
-| `GET /api/report.csv?lookbackHours=N` | Same, raw `text/csv` — **Power BI Web connector friendly** |
+| `GET /api/report?startDate=2026-10-01&endDate=2026-10-06` | Generate an inclusive UTC date range (JSON) |
+| `GET /api/report.csv?lookbackHours=N` | Generate by lookback hours as raw `text/csv` — **Power BI Web connector friendly** |
 | `GET /healthz` | Health check (no key required) |
 
 The app authenticates to Application Insights (and Azure Resource Graph/ARM for enrichment)

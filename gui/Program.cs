@@ -354,11 +354,22 @@ app.MapPost("/api/app-run", async (AppRunBody? body, CancellationToken ct) =>
 {
     var (u, k) = ResolveApp(body?.AppUrl, body?.ApiKey);
     if (u is null || k is null) return Results.Json(new { error = "No deployed app is configured yet." }, statusCode: 400);
+    if (body?.StartDate is null || body.EndDate is null)
+        return Results.Json(new { error = "Both startDate and endDate are required." }, statusCode: 400);
+    if (body.StartDate > body.EndDate)
+        return Results.Json(new { error = "startDate must be on or before endDate." }, statusCode: 400);
     try
     {
         var client = httpFactory.CreateClient();
         client.Timeout = TimeSpan.FromMinutes(4);
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{u}/api/run");
+        var startUtc = body.StartDate.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var endUtc = body.EndDate.Value.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+        var todayMidnightUtc = DateTime.UtcNow.Date;
+        var lookbackHours = (int)(endUtc - startUtc).TotalHours;
+        var endOffsetHours = (int)(todayMidnightUtc - endUtc).TotalHours;
+        var path = $"/api/run?startDate={body.StartDate:yyyy-MM-dd}&endDate={body.EndDate:yyyy-MM-dd}" +
+            $"&lookbackHours={lookbackHours}&endOffsetHours={endOffsetHours}";
+        using var req = new HttpRequestMessage(HttpMethod.Post, $"{u}{path}");
         req.Headers.Add("X-Api-Key", k);
         using var resp = await client.SendAsync(req, ct);
         var respBody = await resp.Content.ReadAsStringAsync(ct);
@@ -414,4 +425,4 @@ app.Run(url);
 record LoginBody(string? TenantId);
 record SubscriptionBody(string? SubscriptionId);
 record CreateRgBody(string? Name, string? Location);
-record AppRunBody(string? AppUrl, string? ApiKey);
+record AppRunBody(string? AppUrl, string? ApiKey, DateOnly? StartDate, DateOnly? EndDate);

@@ -23,7 +23,7 @@ button { background: var(--accent); color: white; border: 0; padding: 12px 22px;
 button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
 button:disabled { opacity: .5; cursor: not-allowed; }
 
-select, input[type=text] { width: 100%; background: var(--bg); border:1px solid var(--border); border-radius: 8px; padding: 12px 14px; color: var(--text); font: inherit; font-size: 15px; }
+select, input[type=text], input[type=number], input[type=date] { width: 100%; background: var(--bg); border:1px solid var(--border); border-radius: 8px; padding: 12px 14px; color: var(--text); font: inherit; font-size: 15px; }
 label { display:block; margin: 16px 0 8px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing:.06em; font-weight: 600; }
 label.checkbox { display:flex; align-items:center; gap:10px; text-transform:none; letter-spacing:0; color:var(--text); font-size:15px; font-weight:400; margin-top:20px; }
 label.checkbox input { width:auto; transform: scale(1.2); }

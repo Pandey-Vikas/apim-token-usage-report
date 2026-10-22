@@ -31,11 +31,17 @@ public sealed class TokenUsageReportService
     }
 
     /// <summary>Generates the report; uploads to blob when <paramref name="upload"/> is true and blob is configured.
-    /// Optional <paramref name="lookbackHours"/>/<paramref name="endOffsetHours"/> override the configured window.</summary>
-    public async Task<ReportResult> GenerateAsync(bool upload, int? lookbackHours, int? endOffsetHours, CancellationToken ct)
+    /// Optional lookback/offset or explicit start/end dates override the configured window.</summary>
+    public async Task<ReportResult> GenerateAsync(
+        bool upload,
+        int? lookbackHours,
+        int? endOffsetHours,
+        CancellationToken ct,
+        DateOnly? startDate = null,
+        DateOnly? endDate = null)
     {
-        var (start, end) = _config.ComputeWindow(lookbackHours, endOffsetHours);
-        var reportDate = _config.ResolveReportDate(lookbackHours, endOffsetHours);
+        var (start, end) = _config.ComputeWindow(lookbackHours, endOffsetHours, startDate, endDate);
+        var reportDate = _config.ResolveReportDate(lookbackHours, endOffsetHours, startDate, endDate);
         Console.WriteLine($"Report date: {reportDate}  window: {start:u} -> {end:u} (UTC)");
 
         var tokenRows = await _appInsights.QueryAsync(start, end, ct);

@@ -164,6 +164,17 @@
 
     <div id="viewerAppInfo" class="summary" style="margin-bottom:16px"></div>
 
+    <div class="grid2">
+      <div>
+        <label for="reportStartDate">Start date <span class="muted">(UTC)</span></label>
+        <input type="date" id="reportStartDate">
+      </div>
+      <div>
+        <label for="reportEndDate">End date <span class="muted">(UTC, inclusive)</span></label>
+        <input type="date" id="reportEndDate">
+      </div>
+    </div>
+
     <div class="footer" style="margin-top:16px">
       <div>
         <button id="btnRunReport" class="primary">Run report now</button>
@@ -189,6 +200,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=2"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>
