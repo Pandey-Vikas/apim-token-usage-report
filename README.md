@@ -89,7 +89,7 @@ git --version
 
 ### Step 1 — Get the code
 
-The repo is private; make sure your GitHub account has access (sign in via Git Credential Manager when prompted).
+The repo is public, so no GitHub access is needed.
 
 ```powershell
 git clone https://github.com/Pandey-Vikas/apim-token-usage-report.git
