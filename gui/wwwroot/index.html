@@ -109,9 +109,16 @@
     <h2>Configure &amp; deploy</h2>
     <p class="sub">These map directly to the deployment script parameters.</p>
 
-    <label for="appInsights">Application Insights component</label>
-    <select id="appInsights"></select>
-    <p class="hint">The component already receiving your APIM token metrics.</p>
+    <label>Application Insights <span class="muted">(where APIM token metrics are read from)</span></label>
+    <div class="picker">
+      <label class="radioline"><input type="radio" name="aiMode" value="existing" checked> Use existing</label>
+      <select id="appInsights"></select>
+      <label class="radioline"><input type="radio" name="aiMode" value="new"> Create new</label>
+      <div id="aiNewFields" class="hidden">
+        <input type="text" id="aiNew" placeholder="Leave blank to auto-name (tokrpt-appi)">
+        <p class="hint" style="margin-left:26px">Creates the component and a Log Analytics workspace in the selected resource group and location. A new component is empty until APIM is set up to emit token metrics into it.</p>
+      </div>
+    </div>
 
     <div class="grid2">
       <div>
@@ -228,6 +235,6 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=7"></script>
+<script src="app.js?v=8"></script>
 </body>
 </html>

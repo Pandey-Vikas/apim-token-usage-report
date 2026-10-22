@@ -282,19 +282,14 @@ async function loadAppInsights() {
   const items = await api.get('/api/appinsights');
   const sel = $('appInsights');
   sel.innerHTML = '';
-  if (!Array.isArray(items) || items.length === 0) {
-    const opt = document.createElement('option');
-    opt.value = '';
-    opt.textContent = 'No Application Insights components found';
-    sel.appendChild(opt);
-    return;
-  }
-  items.forEach((a) => {
+  const list = Array.isArray(items) ? items : [];
+  list.forEach((a) => {
     const opt = document.createElement('option');
     opt.value = a.id;
     opt.textContent = `${a.name} (${a.resourceGroup})`;
     sel.appendChild(opt);
   });
+  return list.length;
 }
 
 // Populate a <select> with {name, resourceGroup} items; stash the RG on each option.
@@ -321,18 +316,20 @@ function wirePicker(modeName, existingEl, newEl, hasExisting) {
     $(newEl).classList.toggle('hidden', mode !== 'new');
   };
   radios.forEach((r) => r.addEventListener('change', apply));
+  const ex = document.querySelector(`input[name="${modeName}"][value="existing"]`);
+  const nw = document.querySelector(`input[name="${modeName}"][value="new"]`);
   if (!hasExisting) {
     // No existing resources — force "create new".
-    const ex = document.querySelector(`input[name="${modeName}"][value="existing"]`);
-    const nw = document.querySelector(`input[name="${modeName}"][value="new"]`);
     ex.disabled = true;
     nw.checked = true;
+  } else {
+    ex.disabled = false;
   }
   apply();
 }
 
 async function loadStep4Resources() {
-  const [plans, apps] = await Promise.all([
+  const [plans, apps, aiCount] = await Promise.all([
     api.get('/api/plans'),
     api.get(`/api/webapps?resourceGroup=${encodeURIComponent(window.selectedRg)}`),
     loadAppInsights(),
@@ -341,6 +338,7 @@ async function loadStep4Resources() {
   const hasPlans = fillResourceSelect('planExisting', plans, (p) => `${p.name} (${p.resourceGroup}${p.sku ? ', ' + p.sku : ''})`);
   const hasApps = fillResourceSelect('appExisting', apps, (a) => `${a.name}`);
 
+  wirePicker('aiMode', 'appInsights', 'aiNewFields', aiCount > 0);
   wirePicker('planMode', 'planExisting', 'planNewFields', hasPlans);
   wirePicker('appMode', 'appExisting', 'appNew', hasApps);
 }
@@ -358,11 +356,24 @@ function resolvePicker(modeName, existingSelId, newInputId) {
 }
 
 $('btnDeploy').addEventListener('click', async () => {
-  const appInsightsResourceId = $('appInsights').value;
-  if (!appInsightsResourceId) {
-    $('deployStatus').className = 'status err';
-    $('deployStatus').textContent = 'Select an Application Insights component first.';
-    return;
+  const aiMode = document.querySelector('input[name="aiMode"]:checked').value;
+  let appInsightsResourceId = '';
+  let newAppInsightsName = null;
+  if (aiMode === 'existing') {
+    appInsightsResourceId = $('appInsights').value;
+    if (!appInsightsResourceId) {
+      $('deployStatus').className = 'status err';
+      $('deployStatus').textContent = 'Select an Application Insights component, or choose "Create new".';
+      return;
+    }
+  } else {
+    const base = $('baseName').value.trim() || 'tokrpt';
+    newAppInsightsName = $('aiNew').value.trim() || `${base}-appi`;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,259}$/.test(newAppInsightsName)) {
+      $('deployStatus').className = 'status err';
+      $('deployStatus').textContent = 'Application Insights name may only contain letters, numbers, "-", "_" and ".".';
+      return;
+    }
   }
 
   const plan = resolvePicker('planMode', 'planExisting', 'planNew');
@@ -370,6 +381,7 @@ $('btnDeploy').addEventListener('click', async () => {
 
   const req = {
     appInsightsResourceId,
+    newAppInsightsName,
     location: $('location').value,
     subscriptionId: $('subscription').value,
     baseName: $('baseName').value.trim() || 'tokrpt',
@@ -416,13 +428,14 @@ $('btnDeploy').addEventListener('click', async () => {
       const mApp = full.match(/App Service\s*:\s*(\S+)/);
       const mUrl = full.match(/App URL\s*:\s*(\S+)/);
       const mKey = full.match(/Api Key\s*:\s*(\S+)/);
+      const mAi = full.match(/App Insights\s*:\s*(\S+)/);
       $('viewerLaunch').classList.remove('hidden');
 
       // Persist config so next launch can jump straight to reports (via the app API).
       const config = {
         subscriptionId: req.subscriptionId,
         resourceGroup: req.resourceGroup,
-        appInsightsResourceId: req.appInsightsResourceId,
+        appInsightsResourceId: (mAi && mAi[1]) || req.appInsightsResourceId,
         appName: (mApp && mApp[1]) || '',
         appUrl: (mUrl && mUrl[1]) || '',
         apiKey: (mKey && mKey[1]) || '',

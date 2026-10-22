@@ -18,7 +18,8 @@ public sealed record DeployRequest(
     string? PlanName = null,
     string? PlanResourceGroup = null,
     string? AppName = null,
-    bool GrantAllSubscriptions = false);
+    bool GrantAllSubscriptions = false,
+    string? NewAppInsightsName = null);
 
 /// <summary>
 /// Invokes the existing deploy.ps1 (single source of truth for provisioning + RBAC)
@@ -78,7 +79,6 @@ public sealed class Deployer
         var args = new List<string>
         {
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", _scriptPath,
-            "-AppInsightsResourceId", req.AppInsightsResourceId,
             "-Location", req.Location,
             "-SubscriptionId", req.SubscriptionId,
             "-BaseName", req.BaseName,
@@ -94,6 +94,9 @@ public sealed class Deployer
         {
             if (!string.IsNullOrWhiteSpace(value)) { args.Add(flag); args.Add(value); }
         }
+        // Existing component id, or a name to create a new one — never both.
+        if (!string.IsNullOrWhiteSpace(req.NewAppInsightsName)) AddIf("-NewAppInsightsName", req.NewAppInsightsName);
+        else AddIf("-AppInsightsResourceId", req.AppInsightsResourceId);
         AddIf("-PlanName", req.PlanName);
         AddIf("-PlanResourceGroup", req.PlanResourceGroup);
         AddIf("-AppName", req.AppName);

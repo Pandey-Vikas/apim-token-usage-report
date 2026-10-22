@@ -21,12 +21,19 @@
 .PREREQUISITES
     - Azure CLI (az) logged in:  az login
     - .NET SDK 9+
-    - An existing Application Insights component already receiving APIM token metrics.
+    - An Application Insights component: pass -AppInsightsResourceId for an existing one, or
+      -NewAppInsightsName to have this script create one (with a Log Analytics workspace).
+      A new component is empty until APIM is configured to emit token metrics into it.
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string] $AppInsightsResourceId,
+
+    # Create a workspace-based Application Insights component with this name (in -ResourceGroup / -Location)
+    # instead of using an existing one.
+    [Parameter(Mandatory = $false)]
+    [string] $NewAppInsightsName,
 
     [Parameter(Mandatory = $false)]
     [string] $Location = "eastus",
@@ -73,10 +80,17 @@ $ProgressPreference = "SilentlyContinue"
 function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
 
 # --- Resolve defaults ------------------------------------------------------
-$sha = [Security.Cryptography.SHA256]::Create()
-$hashBytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($AppInsightsResourceId))
-$suffix = ([BitConverter]::ToString($hashBytes) -replace '-', '').Substring(0, 6).ToLower()
+if (-not $AppInsightsResourceId -and -not $NewAppInsightsName) {
+    throw "Specify -AppInsightsResourceId (existing component) or -NewAppInsightsName (create a new one)."
+}
+if ($NewAppInsightsName -and $NewAppInsightsName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,259}$') {
+    throw "Invalid -NewAppInsightsName '$NewAppInsightsName'. Use letters, numbers, '-', '_' or '.'."
+}
 if (-not $ResourceGroup)     { $ResourceGroup = "$BaseName-rg" }
+$sha = [Security.Cryptography.SHA256]::Create()
+$hashSource = if ($AppInsightsResourceId) { $AppInsightsResourceId } else { "$ResourceGroup/$BaseName/$NewAppInsightsName" }
+$hashBytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($hashSource))
+$suffix = ([BitConverter]::ToString($hashBytes) -replace '-', '').Substring(0, 6).ToLower()
 if (-not $AppName)           { $AppName = "$BaseName-app-$suffix" }
 if (-not $PlanName)          { $PlanName = "$BaseName-plan" }
 if (-not $PlanResourceGroup) { $PlanResourceGroup = $ResourceGroup }
@@ -100,6 +114,53 @@ if ((az group exists --name $ResourceGroup) -eq "true") {
     Write-Step "Creating resource group '$ResourceGroup' in $Location"
     az group create --name $ResourceGroup --location $Location --output none
     if ($LASTEXITCODE -ne 0) { throw "Failed to create resource group '$ResourceGroup'." }
+}
+
+# --- Make sure required resource providers are registered (fresh subscriptions often are not) ---
+Write-Step "Checking resource provider registration"
+$namespaces = @("Microsoft.Web", "Microsoft.Insights")
+if ($NewAppInsightsName) { $namespaces += "Microsoft.OperationalInsights" }
+foreach ($ns in $namespaces) {
+    $state = az provider show --namespace $ns --query registrationState -o tsv 2>$null
+    if ($state -ne "Registered") {
+        Write-Host "  registering $ns (was '$state') — this can take a minute..."
+        az provider register --namespace $ns --wait --output none 2>$null
+        if ($LASTEXITCODE -ne 0) { Write-Warning "  could not register $ns; continuing (you may need Owner/Contributor on the subscription)." }
+    } else { Write-Host "  $ns registered" }
+}
+
+# --- Application Insights (create when requested; idempotent) ---------------
+if ($NewAppInsightsName) {
+    $subScope = "/subscriptions/$SubscriptionId/resourceGroups/$ResourceGroup"
+    $AppInsightsResourceId = "$subScope/providers/microsoft.insights/components/$NewAppInsightsName"
+    $workspaceName = "$NewAppInsightsName-law"
+    $workspaceId = "$subScope/providers/microsoft.operationalinsights/workspaces/$workspaceName"
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("tokrpt-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    try {
+        az resource show --ids $AppInsightsResourceId --api-version 2020-02-02 --query id -o tsv 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Step "Using existing Application Insights '$NewAppInsightsName'"
+        } else {
+            Write-Step "Creating Log Analytics workspace '$workspaceName'"
+            $wsProps = Join-Path $tmp "ws.json"
+            '{"sku":{"name":"PerGB2018"},"retentionInDays":30}' | Set-Content -Path $wsProps -Encoding ascii
+            az resource create --id $workspaceId --api-version 2022-10-01 --location $Location `
+                --properties "@$wsProps" --output none
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create Log Analytics workspace '$workspaceName'." }
+
+            Write-Step "Creating Application Insights '$NewAppInsightsName' in $Location"
+            $aiProps = Join-Path $tmp "ai.json"
+            ('{"Application_Type":"web","Flow_Type":"Bluefield","Request_Source":"rest","WorkspaceResourceId":"' + $workspaceId + '"}') |
+                Set-Content -Path $aiProps -Encoding ascii
+            az resource create --id $AppInsightsResourceId --api-version 2020-02-02 --location $Location `
+                --properties "@$aiProps" --output none
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create Application Insights '$NewAppInsightsName'." }
+        }
+    }
+    finally { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
+    Write-Host "Application Insights: $AppInsightsResourceId"
+    Write-Warning "This component is new and empty. Configure APIM to emit token metrics (llm-emit-token-metric) into it for reports to contain data."
 }
 
 # --- App Service plan (Windows) --------------------------------------------
@@ -238,6 +299,7 @@ Remove-Item -Recurse -Force $publishDir, $zipPath -ErrorAction SilentlyContinue
 Write-Step "Done"
 Write-Host "App Service : $AppName"
 Write-Host "App URL     : $appUrl"
+Write-Host "App Insights: $AppInsightsResourceId"
 Write-Host "Api Key     : $apiKey"
 Write-Host "Report API  : $appUrl/api/report.csv?lookbackHours=$LookbackHours  (header X-Api-Key: <key>)"
 Write-Host "`nThe app generates reports on demand from Application Insights and serves them through its"
