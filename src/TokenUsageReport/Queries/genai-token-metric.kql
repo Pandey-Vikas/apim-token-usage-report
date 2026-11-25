@@ -8,10 +8,12 @@ customMetrics
 | extend TokenType = tostring(customDimensions['gen_ai.token.type']),
          DeploymentName = coalesce(tostring(customDimensions['gen_ai.response.model']), tostring(customDimensions['gen_ai.request.model'])),
          Backend = tostring(customDimensions['server.address'])
+| extend AgentId = tostring(customDimensions['gen_ai.agent.id']),
+         AgentName = coalesce(tostring(customDimensions['azure.ai.agentserver.agent_name']), tostring(customDimensions['gen_ai.agent.name']))
 | summarize PromptTokens = tolong(sumif(valueSum, TokenType == 'input')),
             CompletionTokens = tolong(sumif(valueSum, TokenType == 'output')),
             Calls = tolong(sumif(valueCount, TokenType == 'input'))
-    by DeploymentName, Backend
+    by DeploymentName, Backend, AgentId, AgentName
 | extend SubscriptionId = '', CachedTokens = long(0), TotalTokens = PromptTokens + CompletionTokens
-| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls, AgentId, AgentName
 | order by TotalTokens desc

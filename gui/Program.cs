@@ -1,6 +1,8 @@
 using System.Text;
 using System.Text.Json;
+using Azure.Identity;
 using DeployPortal.Services;
+using TokenUsageReport.Reporting;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<AzCli>();
@@ -227,7 +229,7 @@ app.MapGet("/api/locations", async () =>
     {
         "eastus", "eastus2", "westus", "westus2", "westus3", "centralus",
         "southcentralus", "northcentralus", "westeurope", "northeurope",
-        "swedencentral", "uksouth", "francecentral", "australiaeast", "japaneast", "canadacentral",
+        "swedencentral", "uksouth", "francecentral", "centralindia", "southindia", "westindia", "australiaeast", "japaneast", "canadacentral",
     };
     try
     {
@@ -268,29 +270,6 @@ app.MapPost("/api/create-resource-group", async (CreateRgBody body) =>
             return Results.Json(new { name = body.Name, location = body.Location, existed = true });
         var rg = await az.JsonAsync(new[] { "group", "create", "--name", body.Name, "--location", body.Location });
         return Results.Json(new { name = body.Name, location = body.Location, existed = false });
-    }
-    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
-});
-
-// --- Application Insights components (for the dropdown) ---------------------
-app.MapGet("/api/appinsights", async () =>
-{
-    try
-    {
-        var items = await az.JsonAsync(new[]
-        {
-            "resource", "list", "--resource-type", "microsoft.insights/components",
-        });
-        if (items is null || items.Value.ValueKind != JsonValueKind.Array)
-            return Results.Json(Array.Empty<object>());
-        var mapped = items.Value.EnumerateArray().Select(a => new
-        {
-            id = a.GetProperty("id").GetString(),
-            name = a.GetProperty("name").GetString(),
-            resourceGroup = a.TryGetProperty("resourceGroup", out var rg) ? rg.GetString() : "",
-            location = a.TryGetProperty("location", out var loc) ? loc.GetString() : "",
-        });
-        return Results.Json(mapped);
     }
     catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
 });
@@ -339,21 +318,6 @@ app.MapGet("/api/webapps", async (string? resourceGroup) =>
     catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
 });
 
-app.MapGet("/api/sample-report", () =>
-{
-    // Mirrors the exact schema produced by the worker's CsvWriter, with realistic demo rows.
-    var header = "SubscriptionId,DeploymentName,Backend,ModelName,AccountName,CogSvcSubscriptionId,AccountId,SkuName,SkuCapacity,PromptTokens,CompletionTokens,CachedTokens,TotalTokens,Calls";
-    var rows = new[]
-    {
-        "a3b144fd-39ee-4729-b816-3ed42fc8f31f,gpt-4o,myaccount.openai.azure.com,gpt-4o,myaccount,a3b144fd-39ee-4729-b816-3ed42fc8f31f,/subscriptions/a3b144fd/resourceGroups/rg-ai/providers/Microsoft.CognitiveServices/accounts/myaccount,GlobalStandard,50,412860,128340,64210,541200,1820",
-        "a3b144fd-39ee-4729-b816-3ed42fc8f31f,gpt-4o-mini,myaccount.openai.azure.com,gpt-4o-mini,myaccount,a3b144fd-39ee-4729-b816-3ed42fc8f31f,/subscriptions/a3b144fd/resourceGroups/rg-ai/providers/Microsoft.CognitiveServices/accounts/myaccount,GlobalStandard,30,238100,71540,18220,309640,3450",
-        "a3b144fd-39ee-4729-b816-3ed42fc8f31f,text-embedding-3-large,myaccount.openai.azure.com,text-embedding-3-large,myaccount,a3b144fd-39ee-4729-b816-3ed42fc8f31f,/subscriptions/a3b144fd/resourceGroups/rg-ai/providers/Microsoft.CognitiveServices/accounts/myaccount,Standard,10,88400,0,0,88400,6120",
-        "a3b144fd-39ee-4729-b816-3ed42fc8f31f,gpt-4o,foundryeast.cognitiveservices.azure.com,gpt-4o,foundryeast,a3b144fd-39ee-4729-b816-3ed42fc8f31f,/subscriptions/a3b144fd/resourceGroups/rg-ai2/providers/Microsoft.CognitiveServices/accounts/foundryeast,GlobalStandard,100,904220,301770,142880,1205990,4210",
-    };
-    var csv = header + "\n" + string.Join("\n", rows) + "\n";
-    return Results.Json(new { name = "sample-token-usage-report.csv", csv });
-});
-
 // --- Persisted deployment config -------------------------------------------
 app.MapGet("/api/config", () =>
 {
@@ -378,9 +342,9 @@ app.MapPost("/api/save-config", async (HttpContext ctx) =>
     catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
 });
 
-// --- App-serves-reports proxy (portal never touches blob directly) ----------
-// The deployed app reads/writes blobs with its managed identity and exposes a secured
-// API; the portal calls the app (using the saved app URL + API key) to list/view reports.
+// --- Saved deployment (app URL + API key) -------------------------------------
+// The deployed app reads telemetry with its managed identity and serves the report through a secured API;
+// the portal calls it with the saved app URL and API key.
 JsonElement LoadConfig()
 {
     try
@@ -409,278 +373,82 @@ JsonElement LoadConfig()
     return (null, null);
 }
 
-async Task<IResult> ProxyGet(string appUrl, string apiKey, string path, CancellationToken ct)
+// --- Foundry hierarchy report ------------------------------------------------
+// The same engine the deployed app uses runs here with the signed-in Azure CLI identity, so discovery and the report
+// work before anything is deployed. A fresh credential per request means a tenant switch never reuses an old token.
+var sharedHttp = new HttpClient { Timeout = TimeSpan.FromMinutes(3) };
+
+static List<string> CleanSubscriptions(IEnumerable<string>? ids) =>
+    (ids ?? Enumerable.Empty<string>()).Where(s => Guid.TryParse(s, out _)).Select(s => s.ToLowerInvariant()).Distinct().ToList();
+
+static string Short(Exception ex)
 {
-    var client = httpFactory.CreateClient();
-    client.Timeout = TimeSpan.FromMinutes(3);
-    using var req = new HttpRequestMessage(HttpMethod.Get, $"{appUrl}{path}");
-    req.Headers.Add("X-Api-Key", apiKey);
-    using var resp = await client.SendAsync(req, ct);
-    var body = await resp.Content.ReadAsStringAsync(ct);
-    return Results.Content(body, "application/json", statusCode: (int)resp.StatusCode);
+    var line = ex.Message.Split('\n')[0].Trim();
+    return line.Length > 400 ? line[..400] + "..." : line;
 }
 
-app.MapGet("/api/app-reports", async (string? appUrl, string? apiKey, CancellationToken ct) =>
+// Inclusive UTC dates -> query window; a range that reaches today ends at the moment of the request.
+static (DateTimeOffset Start, DateTimeOffset End, string? Error) Window(DateOnly? startDate, DateOnly? endDate)
 {
-    var (u, k) = ResolveApp(appUrl, apiKey);
-    if (u is null || k is null) return Results.Json(new { error = "No deployed app is configured yet." }, statusCode: 400);
-    try { return await ProxyGet(u, k, "/api/reports", ct); }
-    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 502); }
+    if (startDate is null || endDate is null) return (default, default, "Both startDate and endDate are required.");
+    if (startDate > endDate) return (default, default, "startDate must be on or before endDate.");
+    var start = new DateTimeOffset(startDate.Value.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+    var end = new DateTimeOffset(endDate.Value.AddDays(1).ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+    if (end > DateTimeOffset.UtcNow) end = DateTimeOffset.UtcNow;
+    return start >= end ? (default, default, "The selected date range is in the future.") : (start, end, null);
+}
+
+// Step 3 of the install wizard: what Foundry resources exist in the selected subscriptions.
+app.MapPost("/api/discover", async (DiscoverBody? body, CancellationToken ct) =>
+{
+    var subs = CleanSubscriptions(body?.SubscriptionIds);
+    if (subs.Count == 0) return Results.Json(new { error = "Select at least one subscription." }, statusCode: 400);
+    try
+    {
+        var credential = new CachedCredential(new AzureCliCredential());
+        return Results.Json(await new FoundryDiscovery(new ArmClient(credential, sharedHttp)).DiscoverAsync(subs, includeAgents: true, ct));
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException) { return Results.Json(new { error = Short(ex) }, statusCode: 500); }
 });
 
-app.MapGet("/api/app-report", async (string name, string? appUrl, string? apiKey, CancellationToken ct) =>
+// "Live from Azure": the full report using the signed-in user's access, no deployment needed.
+app.MapPost("/api/usage", async (UsageBody? body, CancellationToken ct) =>
 {
-    var (u, k) = ResolveApp(appUrl, apiKey);
-    if (u is null || k is null) return Results.Json(new { error = "No deployed app is configured yet." }, statusCode: 400);
-    try { return await ProxyGet(u, k, $"/api/reports/content?name={Uri.EscapeDataString(name)}", ct); }
-    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 502); }
+    var subs = CleanSubscriptions(body?.SubscriptionIds);
+    if (subs.Count == 0) return Results.Json(new { error = "Select at least one subscription." }, statusCode: 400);
+    var (start, end, error) = Window(body?.StartDate, body?.EndDate);
+    if (error is not null) return Results.Json(new { error }, statusCode: 400);
+    try
+    {
+        var overrides = PriceBook.ParseOverrides(Environment.GetEnvironmentVariable("REPORT_PRICE_OVERRIDES"));
+        var credential = new CachedCredential(new AzureCliCredential());
+        var service = new UsageReportService(new FoundryDiscovery(new ArmClient(credential, sharedHttp)), new UsageQueryRunner(credential), new PriceBook(sharedHttp, overrides));
+        return Results.Json(await service.RunAsync(new ReportRequest(subs, start, end, body!.TenantId ?? "", body.TenantName ?? ""), ct));
+    }
+    catch (FormatException ex) { return Results.Json(new { error = ex.Message }, statusCode: 400 ); }
+    catch (Exception ex) when (ex is not OperationCanceledException) { return Results.Json(new { error = Short(ex) }, statusCode: 500); }
 });
 
-app.MapPost("/api/app-run", async (AppRunBody? body, CancellationToken ct) =>
+// The deployed app's report (its managed identity and its REPORT_SUBSCRIPTIONS scope), proxied with the saved API key.
+app.MapPost("/api/app-usage", async (AppUsageBody? body, CancellationToken ct) =>
 {
-    var (u, k) = ResolveApp(body?.AppUrl, body?.ApiKey);
+    var (u, k) = ResolveApp(null, null);
     if (u is null || k is null) return Results.Json(new { error = "No deployed app is configured yet." }, statusCode: 400);
-    if (body?.StartDate is null || body.EndDate is null)
-        return Results.Json(new { error = "Both startDate and endDate are required." }, statusCode: 400);
-    if (body.StartDate > body.EndDate)
-        return Results.Json(new { error = "startDate must be on or before endDate." }, statusCode: 400);
+    var (_, _, error) = Window(body?.StartDate, body?.EndDate);
+    if (error is not null) return Results.Json(new { error }, statusCode: 400);
     try
     {
         var client = httpFactory.CreateClient();
         client.Timeout = TimeSpan.FromMinutes(4);
-        var startUtc = body.StartDate.Value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var endUtc = body.EndDate.Value.AddDays(1).ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
-        var todayMidnightUtc = DateTime.UtcNow.Date;
-        var lookbackHours = (int)(endUtc - startUtc).TotalHours;
-        var endOffsetHours = (int)(todayMidnightUtc - endUtc).TotalHours;
-        var path = $"/api/run?startDate={body.StartDate:yyyy-MM-dd}&endDate={body.EndDate:yyyy-MM-dd}" +
-            $"&lookbackHours={lookbackHours}&endOffsetHours={endOffsetHours}";
-        using var req = new HttpRequestMessage(HttpMethod.Post, $"{u}{path}");
+        using var req = new HttpRequestMessage(HttpMethod.Get, $"{u}/api/usage?startDate={body!.StartDate:yyyy-MM-dd}&endDate={body.EndDate:yyyy-MM-dd}");
         req.Headers.Add("X-Api-Key", k);
         using var resp = await client.SendAsync(req, ct);
-        var respBody = await resp.Content.ReadAsStringAsync(ct);
-        return Results.Content(respBody, "application/json", statusCode: (int)resp.StatusCode);
+        var text = await resp.Content.ReadAsStringAsync(ct);
+        if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
+            return Results.Json(new { error = "The deployed app does not provide the Foundry report. Redeploy it from this portal, or use 'Live from Azure'." }, statusCode: 404);
+        return Results.Content(text, "application/json", statusCode: (int)resp.StatusCode);
     }
-    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 502); }
-});
-
-// --- Report query (KQL) templates + validation + APIM link detection ----------------------
-var queriesDir = Path.Combine(Directory.GetParent(app.Environment.ContentRootPath)?.FullName ?? app.Environment.ContentRootPath,
-    "src", "TokenUsageReport", "Queries");
-var queryMeta = new Dictionary<string, (string Name, string Description)>(StringComparer.OrdinalIgnoreCase)
-{
-    ["apim-token-metrics"] = ("APIM token metrics (default)",
-        "Reads Prompt/Completion/Cached/Total Tokens metrics emitted by the APIM llm-emit-token-metric policy."),
-    ["foundry-genai"] = ("Foundry / GenAI telemetry (starting point)",
-        "Reads OpenTelemetry gen_ai.* spans from Foundry agents / Azure OpenAI SDK tracing. Verify against your data."),
-    ["genai-token-metric"] = ("GenAI token-usage metric (starting point)",
-        "Reads the OpenTelemetry metric gen_ai.client.token.usage exported to customMetrics. Verify against your data."),
-};
-string[] requiredColumns = { "SubscriptionId", "DeploymentName", "Backend", "PromptTokens", "CompletionTokens", "CachedTokens", "TotalTokens", "Calls" };
-
-app.MapGet("/api/queries", () =>
-{
-    try
-    {
-        var list = Directory.Exists(queriesDir)
-            ? Directory.GetFiles(queriesDir, "*.kql").OrderBy(f => f.Contains("apim-token-metrics") ? 0 : 1).Select(f =>
-            {
-                var id = Path.GetFileNameWithoutExtension(f);
-                queryMeta.TryGetValue(id, out var m);
-                return new { id, name = m.Name ?? id, description = m.Description ?? "", query = File.ReadAllText(f) };
-            }).ToList()
-            : null;
-        return Results.Json(new { queries = list, required = requiredColumns });
-    }
-    catch (Exception ex) { return Results.Json(new { error = ex.Message }, statusCode: 500); }
-});
-
-app.MapPost("/api/validate-query", async (ValidateQueryBody body) =>
-{
-    if (string.IsNullOrWhiteSpace(body?.AppInsightsResourceId) || string.IsNullOrWhiteSpace(body.Query))
-        return Results.Json(new { error = "An Application Insights component and a query are required." }, statusCode: 400);
-    if (!body.AppInsightsResourceId.StartsWith("/subscriptions/", StringComparison.OrdinalIgnoreCase)
-        || body.AppInsightsResourceId.IndexOfAny(new[] { '&', '|', '<', '>', '^', '%', '"', ' ', '?' }) >= 0)
-        return Results.Json(new { error = "Invalid Application Insights resource id." }, statusCode: 400);
-
-    var bodyFile = Path.Combine(Path.GetTempPath(), $"tokrpt-q-{Guid.NewGuid():N}.json");
-    try
-    {
-        await File.WriteAllTextAsync(bodyFile, JsonSerializer.Serialize(new { query = body.Query, timespan = "P30D" }));
-        var res = await az.JsonAsync(new[] { "rest", "--method", "post",
-            "--url", $"https://management.azure.com{body.AppInsightsResourceId}/api/query?api-version=2014-12-01-preview",
-            "--body", $"@{bodyFile}" }, timeoutMs: 90_000);
-
-        var cols = new List<string>();
-        var rowCount = 0;
-        if (res is { ValueKind: JsonValueKind.Object } r)
-        {
-            JsonElement tables = default;
-            var has = r.TryGetProperty("Tables", out tables) || r.TryGetProperty("tables", out tables);
-            if (has && tables.ValueKind == JsonValueKind.Array && tables.GetArrayLength() > 0)
-            {
-                var t = tables[0];
-                if ((t.TryGetProperty("Columns", out var c) || t.TryGetProperty("columns", out c)) && c.ValueKind == JsonValueKind.Array)
-                    foreach (var col in c.EnumerateArray())
-                        cols.Add((col.TryGetProperty("ColumnName", out var n) || col.TryGetProperty("name", out n)) ? n.GetString() ?? "" : "");
-                if ((t.TryGetProperty("Rows", out var rw) || t.TryGetProperty("rows", out rw)) && rw.ValueKind == JsonValueKind.Array)
-                    rowCount = rw.GetArrayLength();
-            }
-        }
-        var missing = requiredColumns.Where(rc => !cols.Contains(rc, StringComparer.OrdinalIgnoreCase)).ToArray();
-        return Results.Json(new { ok = true, columns = cols, missing, rowCount });
-    }
-    catch (Exception ex)
-    {
-        var msg = ex.Message;
-        var m = System.Text.RegularExpressions.Regex.Match(msg, "\"innererror\":\\{\"code\":\"(\\w+)\",\"message\":\"([^\"]*)\"");
-        if (m.Success) msg = $"KQL error: {m.Groups[2].Value} ({m.Groups[1].Value}). Check the query syntax.";
-        else if (msg.Length > 600) msg = msg[..600] + "…";
-        return Results.Json(new { ok = false, error = msg });
-    }
-    finally { try { File.Delete(bodyFile); } catch { /* ignore */ } }
-});
-
-// Which Application Insights does each APIM instance log to? Those are the components that receive llm-emit-token-metric data.
-app.MapGet("/api/apim-links", async () =>
-{
-    var links = new List<object>();
-    try
-    {
-        var apims = await az.JsonAsync(new[] { "apim", "list" });
-        if (apims is { ValueKind: JsonValueKind.Array })
-            foreach (var a in apims.Value.EnumerateArray())
-            {
-                var id = a.TryGetProperty("id", out var i) ? i.GetString() : null;
-                var name = a.TryGetProperty("name", out var n) ? n.GetString() : null;
-                if (string.IsNullOrEmpty(id)) continue;
-                try
-                {
-                    var loggers = await az.JsonAsync(new[] { "rest", "--method", "get",
-                        "--url", $"https://management.azure.com{id}/loggers?api-version=2022-08-01" }, timeoutMs: 30_000);
-                    if (loggers is { ValueKind: JsonValueKind.Object } l && l.TryGetProperty("value", out var v) && v.ValueKind == JsonValueKind.Array)
-                        foreach (var lg in v.EnumerateArray())
-                        {
-                            if (!lg.TryGetProperty("properties", out var p)) continue;
-                            var type = p.TryGetProperty("loggerType", out var lt) ? lt.GetString() : null;
-                            var res = p.TryGetProperty("resourceId", out var rid) ? rid.GetString() : null;
-                            if (string.Equals(type, "applicationInsights", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(res))
-                                links.Add(new { apim = name, appInsightsId = res });
-                        }
-                }
-                catch { /* this APIM's loggers are not readable — skip it */ }
-            }
-    }
-    catch { /* az apim not available / no access — return what we have */ }
-    return Results.Json(links);
-});
-
-// Runs a KQL query against an Application Insights component through ARM (as the signed-in user).
-async Task<(List<string> Cols, List<List<string>> Rows)> RunKqlAsync(string aiId, string query, string timespan)
-{
-    var file = Path.Combine(Path.GetTempPath(), $"tokrpt-q-{Guid.NewGuid():N}.json");
-    try
-    {
-        await File.WriteAllTextAsync(file, JsonSerializer.Serialize(new { query, timespan }));
-        var res = await az.JsonAsync(new[] { "rest", "--method", "post",
-            "--url", $"https://management.azure.com{aiId}/api/query?api-version=2014-12-01-preview",
-            "--body", $"@{file}" }, timeoutMs: 120_000);
-        var cols = new List<string>();
-        var rows = new List<List<string>>();
-        if (res is { ValueKind: JsonValueKind.Object } r
-            && (r.TryGetProperty("Tables", out var tables) || r.TryGetProperty("tables", out tables))
-            && tables.ValueKind == JsonValueKind.Array && tables.GetArrayLength() > 0)
-        {
-            var t = tables[0];
-            if ((t.TryGetProperty("Columns", out var c) || t.TryGetProperty("columns", out c)) && c.ValueKind == JsonValueKind.Array)
-                foreach (var col in c.EnumerateArray())
-                    cols.Add((col.TryGetProperty("ColumnName", out var n) || col.TryGetProperty("name", out n)) ? n.GetString() ?? "" : "");
-            if ((t.TryGetProperty("Rows", out var rw) || t.TryGetProperty("rows", out rw)) && rw.ValueKind == JsonValueKind.Array)
-                foreach (var row in rw.EnumerateArray())
-                    rows.Add(row.EnumerateArray().Select(v => v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : v.ToString()).ToList());
-        }
-        return (cols, rows);
-    }
-    finally { try { File.Delete(file); } catch { /* ignore */ } }
-}
-
-// "Why is my report empty?" — inspects the deployed app's Application Insights and tells what token data actually exists.
-app.MapPost("/api/diagnose", async () =>
-{
-    var cfg = LoadConfig();
-    string? Cfg(string k) => cfg.ValueKind == JsonValueKind.Object && cfg.TryGetProperty(k, out var v) ? v.GetString() : null;
-    var appName = Cfg("appName"); var rg = Cfg("resourceGroup"); var sub = Cfg("subscriptionId");
-    var safe = new System.Text.RegularExpressions.Regex(@"^[A-Za-z0-9._()-]+$");
-    if (string.IsNullOrEmpty(appName) || string.IsNullOrEmpty(rg) || string.IsNullOrEmpty(sub)
-        || !safe.IsMatch(appName) || !safe.IsMatch(rg) || !safe.IsMatch(sub))
-        return Results.Json(new { error = "No deployed app is remembered on this machine yet. Deploy first (or use the deployment that created the app)." }, statusCode: 400);
-
-    try
-    {
-        // What the app really uses (authoritative): its Application Insights id and whether a custom query is set.
-        var settings = await az.JsonAsync(new[] { "webapp", "config", "appsettings", "list",
-            "--name", appName, "--resource-group", rg, "--subscription", sub }, timeoutMs: 60_000);
-        string? aiId = null, queryB64 = null;
-        if (settings is { ValueKind: JsonValueKind.Array })
-            foreach (var s in settings.Value.EnumerateArray())
-            {
-                var n = s.TryGetProperty("name", out var nn) ? nn.GetString() : null;
-                var v = s.TryGetProperty("value", out var vv) ? vv.GetString() : null;
-                if (n == "APPINSIGHTS_RESOURCE_ID") aiId = v;
-                if (n == "REPORT_QUERY_B64") queryB64 = v;
-            }
-        if (string.IsNullOrEmpty(aiId)) return Results.Json(new { error = "The app has no APPINSIGHTS_RESOURCE_ID setting." }, statusCode: 400);
-
-        string queryInUse = "apim-token-metrics";
-        if (!string.IsNullOrEmpty(queryB64))
-        {
-            queryInUse = "custom";
-            try
-            {
-                var used = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(queryB64)).Replace("\r\n", "\n").Trim();
-                foreach (var f in Directory.GetFiles(queriesDir, "*.kql"))
-                    if (File.ReadAllText(f).Replace("\r\n", "\n").Trim() == used) { queryInUse = Path.GetFileNameWithoutExtension(f); break; }
-            }
-            catch { /* keep "custom" */ }
-        }
-
-        var metrics = await RunKqlAsync(aiId, "customMetrics | summarize n=count(), lastSeen=max(timestamp) by name | order by n desc | take 40", "P30D");
-        var spans = await RunKqlAsync(aiId,
-            "dependencies | where isnotempty(tostring(customDimensions['gen_ai.usage.input_tokens'])) or isnotempty(tostring(customDimensions['gen_ai.usage.output_tokens'])) | summarize n=count(), firstSeen=min(timestamp), lastSeen=max(timestamp)", "P30D");
-        var keys = await RunKqlAsync(aiId,
-            "union (dependencies | extend itemType='dependencies' | project itemType, customDimensions | take 20000), " +
-            "(traces | extend itemType='traces' | project itemType, customDimensions | take 20000), " +
-            "(requests | extend itemType='requests' | project itemType, customDimensions | take 20000), " +
-            "(customEvents | extend itemType='customEvents' | project itemType, customDimensions | take 20000), " +
-            "(customMetrics | extend itemType='customMetrics' | project itemType, customDimensions | take 20000) " +
-            "| where isnotempty(customDimensions) | extend keys = bag_keys(customDimensions) | mv-expand keys | extend key = tostring(keys) " +
-            "| where key contains 'token' | summarize n=count() by itemType, key | order by n desc | take 25", "P7D");
-
-        var metricNames = metrics.Rows.Select(r => r[0]).ToList();
-        var hasApim = metricNames.Any(m => m.Equals("Prompt Tokens", StringComparison.OrdinalIgnoreCase) || m.Equals("Total Tokens", StringComparison.OrdinalIgnoreCase));
-        var hasGenAiMetric = metricNames.Any(m => m.Equals("gen_ai.client.token.usage", StringComparison.OrdinalIgnoreCase));
-        var spanCount = spans.Rows.Count > 0 && long.TryParse(spans.Rows[0][0], out var sc) ? sc : 0;
-
-        string recommended = hasApim ? "apim-token-metrics" : spanCount > 0 ? "foundry-genai" : hasGenAiMetric ? "genai-token-metric" : "";
-        return Results.Json(new
-        {
-            appInsightsId = aiId,
-            queryInUse,
-            recommended,
-            hasApimMetrics = hasApim,
-            hasGenAiMetric,
-            genAiSpanCount = spanCount,
-            genAiSpanFirst = spans.Rows.Count > 0 && spans.Rows[0].Count > 1 ? spans.Rows[0][1] : null,
-            genAiSpanLast = spans.Rows.Count > 0 && spans.Rows[0].Count > 2 ? spans.Rows[0][2] : null,
-            metrics = metrics.Rows.Select(r => new { name = r[0], count = r[1], last = r.Count > 2 ? r[2] : "" }),
-            tokenKeys = keys.Rows.Select(r => new { itemType = r[0], key = r[1], count = r[2] }),
-        });
-    }
-    catch (Exception ex)
-    {
-        var msg = ex.Message; if (msg.Length > 500) msg = msg[..500] + "…";
-        return Results.Json(new { error = msg }, statusCode: 500);
-    }
+    catch (Exception ex) when (ex is not OperationCanceledException) { return Results.Json(new { error = Short(ex) }, statusCode: 502); }
 });
 
 // --- Prerequisites ---------------------------------------------------------
@@ -730,5 +498,6 @@ app.Run(url);
 record LoginBody(string? TenantId);
 record SubscriptionBody(string? SubscriptionId);
 record CreateRgBody(string? Name, string? Location);
-record AppRunBody(string? AppUrl, string? ApiKey, DateOnly? StartDate, DateOnly? EndDate);
-record ValidateQueryBody(string? AppInsightsResourceId, string? Query);
+record DiscoverBody(List<string>? SubscriptionIds);
+record UsageBody(List<string>? SubscriptionIds, DateOnly? StartDate, DateOnly? EndDate, string? TenantId, string? TenantName);
+record AppUsageBody(DateOnly? StartDate, DateOnly? EndDate);

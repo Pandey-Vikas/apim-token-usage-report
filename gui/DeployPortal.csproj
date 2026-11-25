@@ -9,4 +9,13 @@
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
+  <!-- The portal runs the same discovery/report engine as the deployed app (linked, not copied). -->
+  <ItemGroup>
+    <Compile Include="..\src\TokenUsageReport\Reporting\**\*.cs" LinkBase="Reporting" />
+    <Compile Include="..\src\TokenUsageReport\Services\PortalLinks.cs" LinkBase="Reporting" />
+    <EmbeddedResource Include="..\src\TokenUsageReport\Queries\foundry-usage.kql" LogicalName="foundry-usage.kql" />
+    <PackageReference Include="Azure.Identity" Version="1.13.1" />
+    <PackageReference Include="Azure.Monitor.Query" Version="1.6.0" />
+  </ItemGroup>
+
 </Project>

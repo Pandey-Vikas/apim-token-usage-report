@@ -5,11 +5,76 @@
 * { box-sizing: border-box; }
 body { margin:0; font: 16px/1.6 -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
 .app { max-width: 860px; margin: 48px auto; padding: 0 24px; }
+.app.wide { max-width: 1400px; }
 header h1 { margin: 0 0 6px; font-size: 30px; }
 header p { margin: 0 0 28px; color: var(--muted); font-size: 16px; }
 
 .steps { display: flex; gap: 8px; margin-bottom: 24px; }
 .steps span { flex:1; text-align:center; padding: 12px 10px; border-radius: 8px; background: var(--panel); border:1px solid var(--border); color: var(--muted); font-size: 13px; font-weight: 500; }
+
+/* Checklists (subscription picker) */
+.checklist { max-height: 320px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; margin-top: 12px; background: var(--bg); }
+.checkrow { display: flex; align-items: center; gap: 10px; margin: 0; padding: 8px 14px; text-transform: none; letter-spacing: 0; color: var(--text); font-size: 14px; font-weight: 400; border-bottom: 1px solid rgba(255,255,255,0.04); cursor: pointer; }
+.checkrow:last-child { border-bottom: 0; }
+.checkrow input { width: auto; transform: scale(1.15); }
+.checkrow span { word-break: break-all; }
+input[type=text]#subFilter { flex: 1; }
+.filerow button { white-space: nowrap; }
+
+/* Discovery tree + KPI cards */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0; }
+.kpi { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.kpi-v { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.kpi-k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+.kpi-s { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.tree details { margin: 4px 0 4px 18px; }
+.tree > details { margin-left: 0; }
+.tree summary { cursor: pointer; padding: 3px 0; }
+.tree .leaf { margin-left: 22px; color: var(--muted); font-size: 13px; word-break: break-word; }
+.tree .leaf.warn { color: var(--warn); }
+#discoverWarningList, #warningList { margin: 8px 0 0 18px; padding: 0; color: var(--muted); font-size: 13px; }
+
+/* Dashboard */
+.viewer-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.controls { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: end; margin-top: 16px; }
+.seg { display: flex; gap: 6px; }
+h3 { margin: 18px 0 8px; font-size: 15px; }
+.two-col { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; margin-top: 12px; }
+.chart { display: flex; align-items: flex-end; gap: 3px; height: 190px; padding: 8px 6px 0; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; }
+.bar-col { flex: 1; min-width: 4px; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; }
+.bar-stack { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
+.bar.in { background: var(--accent); }
+.bar.out { background: #a371f7; }
+.bar-label { height: 18px; font-size: 10px; color: var(--muted); white-space: nowrap; overflow: visible; }
+.legend { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: middle; }
+.legend .sw.in { background: var(--accent); } .legend .sw.out { background: #a371f7; }
+.toplist { display: flex; flex-direction: column; gap: 8px; }
+.top-row { display: grid; grid-template-columns: 110px 1fr 80px; gap: 8px; align-items: center; font-size: 13px; }
+.top-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.top-bar { background: var(--bg); border-radius: 4px; height: 10px; border: 1px solid var(--border); }
+.top-fill { background: var(--accent); height: 100%; border-radius: 3px; }
+.top-val { text-align: right; font-variant-numeric: tabular-nums; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 18px; }
+.toolbar { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; margin: 14px 0 8px; }
+.toolbar button { padding: 6px 14px; font-size: 13px; }
+.treewrap { overflow: auto; max-height: 620px; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
+table.tree-table td.name { white-space: nowrap; }
+table.tree-table tr.lvl-subscription td { background: rgba(47,129,247,0.08); font-weight: 600; }
+table.tree-table tr.lvl-tenant td { background: rgba(47,129,247,0.16); font-weight: 700; }
+table.tree-table tr.lvl-resource-group td { background: rgba(255,255,255,0.03); }
+.toggle { background: transparent; border: 0; color: var(--text); padding: 0 6px 0 0; width: 22px; cursor: pointer; font-size: 13px; }
+.toggle-gap { display: inline-block; width: 22px; }
+.lvl-tag { margin-left: 8px; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.badge { margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: 11px; border: 1px solid var(--border); }
+.badge.idle { color: var(--muted); }
+.badge.warn { color: var(--warn); border-color: var(--warn); }
+.portal-link { color: var(--accent); font-size: 12px; text-decoration: none; }
+.share-bar { display: inline-block; width: 60px; height: 6px; margin-left: 8px; background: var(--bg); border-radius: 3px; vertical-align: middle; border: 1px solid var(--border); }
+.share-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+table.csv td.when { white-space: nowrap; color: var(--muted); }
+table.csv th.num { text-align: right; }
+@media (max-width: 1000px) { .two-col, .controls { grid-template-columns: 1fr; } }
 .steps span.active { color: var(--text); border-color: var(--accent); }
 .steps span.done { color: var(--good); border-color: var(--good); }
 

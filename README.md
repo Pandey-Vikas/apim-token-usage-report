@@ -1,13 +1,48 @@
 # Token Usage Report
 
 A **minimal .NET App Service web app** that pulls **Azure OpenAI / AI Foundry token usage**
-from Application Insights (populated by API Management token metrics), enriches it with
+from Application Insights (API Management token metrics or Foundry / GenAI telemetry), enriches it with
 Cognitive Services model/account/SKU metadata, and **serves the report as CSV through a secured
 API** — ready to consume in a portal or **Power BI**.
 
 It is deliberately simple and cheap: **no storage account, no private endpoint, no VNet.**
 The app generates the report **on demand** from Application Insights (which already retains
 the raw token telemetry) and returns it.
+
+## Hierarchical Foundry report (default)
+
+The report is grouped **Tenant → Subscriptions → Resource groups → Foundry resources (and their linked
+Application Insights) → Projects → Agents → Models**, with Daily / Weekly / Monthly views.
+
+**Install wizard (local Deployment Portal)** — five steps:
+
+1. **Sign in** – shows the Azure CLI account and tenant.
+2. **Subscriptions** – select one *or more* subscriptions.
+3. **Detect Foundry** – scans every resource group of the selected subscriptions for Foundry resources and projects,
+   follows each project's *Application Insights* connection, and lists deployed models and agents. Projects with no
+   linked Application Insights are flagged because their usage cannot be reported.
+4. **Hosting** – resource group, App Service plan and web app (existing or new).
+5. **Deploy** – grants the app's managed identity **Reader** on the selected subscriptions and **Monitoring Reader** on
+   each detected Application Insights (or on the whole subscriptions if you tick *include projects created later*).
+   Listing agents that have no activity is opt-in (*Foundry User* role on each project) because that role can also
+   list account keys and connection secrets.
+
+**Dashboard** – KPI cards, a Day/Week/Month chart, top agents, filters (subscription, resource group, project,
+agent, model) and an expandable Tenant › Subscription › RG › Project › Agent › Model tree with Azure portal links and
+"Break down by period". Detail CSV and grouped CSV export are built in. Cost uses the cost reported in telemetry when present;
+otherwise it is a **list-price estimate** from the Azure Retail Prices API (shown as `n/a` when no price exists, e.g. model-router,
+gpt-5 and gpt-4.1 at the time of writing). Override prices with `REPORT_PRICE_OVERRIDES`
+(`{"model":{"input":x,"cachedInput":y,"output":z}}`, USD per 1M tokens). The data source can be *this machine* (your
+Azure CLI identity) or the deployed app.
+
+Each row carries Tenant, Subscription, Resource group, Foundry resource, Project, Application Insights, Agent, Model,
+Deployment, backend, calls, errors, average latency, input/output/cached/total tokens and cost.
+
+API (deployed app, `X-Api-Key` required): `GET /api/usage` (JSON) and `GET /api/usage.csv?granularity=day|week|month`,
+both taking `lookbackHours` or `startDate`/`endDate`. Weeks start on Monday (UTC).
+
+The sections below that mention the query editor, *Diagnose* and `/api/report` describe the **legacy single-Application-Insights
+mode**, which is only active when `APPINSIGHTS_RESOURCE_ID` is set on the app. The portal's query editor and Diagnose were removed.
 
 Contents of this repo:
 
@@ -47,7 +82,7 @@ Client / Power BI ──X-Api-Key──► App Service (.NET 9, managed identity
                                 CSV / JSON report
 ```
 
-1. **Query Application Insights** (`customMetrics`) for the report window.
+1. **Query Application Insights** for the report window. The default checks APIM metrics, then Foundry usage spans, then GenAI token metrics until a source returns rows.
 2. **Build an inventory** of Cognitive Services deployments via Azure Resource Graph + ARM.
 3. **Left-join** token rows to inventory on `Backend + DeploymentName`.
 4. **Render CSV/JSON** and return it from the secured API.
@@ -65,7 +100,7 @@ on the subscription.
 | Requirement | Details |
 |-------------|---------|
 | Azure subscription | You need **Owner**, or **Contributor + User Access Administrator**, on the target subscription/resource group (the deploy creates resources **and assigns roles**). |
-| Application Insights component | Use an existing one, or let the portal/script **create a new one** (with a Log Analytics workspace). The component must receive APIM token metrics for reports to contain data: `Prompt Tokens`, `Completion Tokens`, `Prompt Cached Tokens`, `Total Tokens`, with dimensions `Deployment`, `Subscription ID`, `Backend`. A newly created component is empty until APIM is configured to emit them. |
+| Application Insights component | Use the component receiving your Foundry / OpenAI telemetry or APIM token metrics. Foundry telemetry must include usage token attributes, not just trace messages. APIM emits `Prompt Tokens`, `Completion Tokens`, `Prompt Cached Tokens`, `Total Tokens` with dimensions `Deployment`, `Subscription ID`, `Backend`. A newly created component is empty until instrumentation writes to it. |
 | Network | Outbound internet access to `*.azure.com`, `*.azurewebsites.net`, `login.microsoftonline.com`. |
 
 ### Tools on the machine you deploy from (Windows)
@@ -134,6 +169,11 @@ This builds and starts the portal and opens **http://127.0.0.1:5099**. In the br
 4. **Resource group** — pick an existing one or create a new one.
 5. **Configure & deploy** — select the Application Insights component, adjust options, click
    **Deploy to Azure**. The portal runs [deploy.ps1](./deploy/deploy.ps1) and streams live logs.
+
+The **Location** is the hosting region, not a change to an existing Application Insights component.
+For a new plan it defaults to the selected component's region (or the resource group's region).
+For an existing plan it is fixed to that plan's actual region. The component picker shows its own
+region separately. Selecting Central India no longer falls through to the first alphabetical region.
 
 If port 5099 is busy: `./run.ps1 -Port 5100`.
 
@@ -271,9 +311,28 @@ curl.exe -H "X-Api-Key: <key>" "https://<app>.azurewebsites.net/api/report.csv?l
 | SubscriptionId, DeploymentName, Backend | App Insights `customMetrics` dimensions |
 | ModelName, AccountName, CogSvcSubscriptionId, AccountId, SkuName, SkuCapacity | Resource Graph + ARM inventory |
 | PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls | App Insights token metrics |
+| AgentId, AgentName | Foundry / GenAI span or metric attributes; blank when not emitted or unambiguously attributable |
+| ReportedCost, CostCurrency | Cost and currency explicitly emitted in usage telemetry; blank when unavailable |
+| ResourceId, PortalUrl | Foundry telemetry's `gen_ai.azure_ai_project.id` (the Foundry project), else the matched Cognitive Services account from the inventory. `PortalUrl` is an `https://portal.azure.com/#resource<id>/overview` deep link, shown in the viewer as **Open in Azure portal**. Blank when no valid ARM id is available |
 
 > `TotalTokens = PromptTokens + CompletionTokens`. Reasoning tokens are already included in
 > completion tokens and are not reported separately.
+
+The four agent/cost columns are appended after the existing columns. Foundry rows are grouped by
+agent, model/deployment, backend and reported currency. `Calls` counts usage spans, not distinct
+agent invocations. Parent agent/tool totals are excluded when child model usage is available to
+avoid counting both totals and model calls. Agent identity is taken from the span, its direct parent,
+or a single unambiguous agent in the same trace. Ambiguous multi-agent traces keep blank identity
+rather than assigning usage to the wrong agent.
+
+**Costs are not inferred from tokens.** The Foundry template reads `gen_ai.usage.cost` or
+`llm.cost.total` from custom dimensions/measurements and currency from
+`gen_ai.usage.cost.currency` or `llm.cost.currency`. These are supported exporter fields, not
+guaranteed Foundry attributes. A group has a cost only if every counted usage record includes one;
+unknown currency remains blank. A cost estimate visible in the Foundry portal may be calculated
+by the portal and not persisted in Application Insights. Reproducing such estimates requires
+explicit model/deployment pricing and currency, including cached-input rates; this report does
+not invent prices or claim to be an Azure billing export.
 
 ---
 
@@ -309,29 +368,56 @@ never loses a report: the CSV is still returned and the error is written to the 
 
 | Source | What writes the data | Which Application Insights | Query template |
 |--------|----------------------|----------------------------|----------------|
-| **APIM** (default) | The APIM `llm-emit-token-metric` policy → `customMetrics` (`Prompt Tokens`, `Completion Tokens`, …) | The one set as the **APIM logger** of your APIM instance | *APIM token metrics (default)* |
-| **Foundry / OpenAI tracing** (no APIM) | OpenTelemetry `gen_ai.*` spans from Foundry agents / the OpenAI SDK → `dependencies`; or the metric `gen_ai.client.token.usage` → `customMetrics` | The one **connected to your Foundry project** | *Foundry / GenAI telemetry* or *GenAI token-usage metric* (both **starting points — verify**) |
+| **APIM** | The APIM `llm-emit-token-metric` policy → `customMetrics` (`Prompt Tokens`, `Completion Tokens`, …) | The one set as the **APIM logger** of your APIM instance | *Automatic* (APIM first) |
+| **Foundry / OpenAI tracing** | OpenTelemetry `gen_ai.*`, legacy `llm.usage.*` or OpenInference `llm.token_count.*` usage in `dependencies`, `requests`, `traces`, `customEvents`; or `gen_ai.client.token.usage` in `customMetrics` | The one **connected to your Foundry project** | *Foundry / GenAI telemetry (per agent)* or *GenAI token-usage metric*; also tried automatically when APIM has no rows |
 
-Linking a Foundry project to an Application Insights does **not** produce the APIM metrics the default query reads, so a freshly created, empty component gives empty reports until one of the two sources writes into it.
+Linking a Foundry project does **not** produce APIM metrics. The default now falls back to Foundry
+and then GenAI metrics when APIM returns no rows. Sources are **not summed together**, to avoid
+counting the same request through multiple telemetry paths. If both APIM and Foundry exist and
+you want per-agent attribution, explicitly choose the **Foundry** template. A custom query is
+always respected and is never automatically replaced.
 
 **Recommended:** in the portal, choose **Use existing** and pick the component marked **★ APIM '…' logs here** — the portal detects which Application Insights each APIM instance logs to and preselects it. Use **Create new** only if you will then point your APIM logger (or Foundry connection) at the new component.
 
 ### Report window and "empty report" diagnosis
 
+- To watch prompts sent from **Foundry or an external app**, open **View reports** and enable
+  **Live token tracking**. It queries today's UTC usage immediately and again 30 seconds after
+  each query finishes (no overlapping requests). Select an actual **agent / model** from the
+  returned telemetry to filter the table and input/output/cached/total token summary. Unattributed
+  LLM usage is labelled separately; an agent is never invented. Download CSV retains the full
+  report, not just the displayed filter.
+- For a local demo without redeploying, enable **Read Foundry telemetry directly with my Azure CLI
+  sign-in** and select the Application Insights component actually connected to your Foundry
+  project. This queries the bundled Foundry KQL over the selected UTC window using your CLI
+  identity. It does not change the deployed app, assign roles, or generate sample usage. CSVs in
+  this mode contain query columns without Cognitive Services inventory enrichment.
+  **Diagnose** is disabled in direct mode because it inspects the deployed app's different settings.
+- Live tracking uses the deployed app's read-only `/api/report` endpoint; polls do not upload blobs
+  or fill browser report history. Disabling tracking, leaving the viewer, or loading saved/sample
+  data stops polling. Failed refreshes retain the last successful values with an explicit error;
+  successful empty results show **NO DATA** and retry. Use Diagnose manually for live-mode failures.
+- **This is ingestion-based monitoring, not immediate response streaming.** A prompt must emit
+  usage into the selected Application Insights first, which can take several minutes. The
+  dashboard shows the last check time, not the time the prompt completed. For per-agent monitoring,
+  deploy the Foundry / GenAI template rather than APIM-only telemetry. The local portal does not
+  invoke Foundry agents or change their instrumentation.
 - A date range that includes **today** ends at the **moment of the request** (UTC), not at midnight, so the newest telemetry is included. `lookbackHours` (API / Power BI) is a rolling window ending now. The viewer shows the exact window used. The viewer's default range is *Last 7 days*; use **Today (up to now)** for the latest hours.
 - Application Insights can take a few minutes to ingest new telemetry, so very recent calls may not appear immediately.
-- If a report comes back empty, click **Why no data? (Diagnose)** in the report viewer. It inspects the app's Application Insights and tells you whether it holds APIM token metrics, Foundry/GenAI spans or the GenAI token metric, which query the app is running, and — if they don't match — which template to redeploy with.
+- Empty results are shown as **NO DATA**, not a successful report, and the viewer automatically runs **Why no data? (Diagnose)**. The API returns `empty`, `querySource`, `warning` and the exact UTC window. Diagnostics inspect the deployed app's actual component and query, recognised usage across all four span/event tables, agent names and token/agent/cost field names. Schema errors, missing result tables and partial query failures are errors, not empty successes.
+- This diagnostic uses your locally signed-in Azure CLI identity, which needs access to the client's subscription and Application Insights. It does not expose prompt or completion content. Review diagnostic output before sharing it.
 
 ### Editing the report query
 
-Step 4 of the portal has **Advanced: report query (KQL)**:
+Step 4 of the portal has an expanded **Report data source & query (KQL)** section:
 
 1. Pick a template (or write your own) in the editor.
-2. Click **Validate query** — it runs the query against your Application Insights (last 30 days) and checks the required columns are present.
+2. Click **Validate query** — it runs against your Application Insights (last 30 days), checks required columns, and flags zero rows as **NO DATA**. The unchanged automatic template validates the same source fallback sequence as the deployed app.
 3. Click **Deploy to Azure** — the query is stored on the app (`REPORT_QUERY_B64`). Leaving the default template untouched keeps the bundled default.
 
 Rules for a custom query:
-- It must return the columns `SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls` (a missing numeric column counts as 0, a missing text column is blank).
+- It must return the columns `SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls`. Missing required columns fail explicitly, even for zero rows.
+- Optional columns: `AgentId, AgentName, ReportedCost, CostCurrency`. Missing agent identity/cost is retained as blank and reported in a warning, not silently turned into a zero cost.
 - Do **not** add a time filter — the app applies the report date range.
 - `Backend` + `DeploymentName` are used to join model/account/SKU details, so keep them as the OpenAI endpoint host (e.g. `myaccount.openai.azure.com`) and the deployment name.
 
@@ -345,12 +431,15 @@ Set automatically by the deploy script; override on the App Service (Settings �
 
 | Setting | Description |
 |---------|-------------|
-| `APPINSIGHTS_RESOURCE_ID` | ARM id of the App Insights component (required) |
+| `REPORT_SUBSCRIPTIONS` | Comma-separated subscription ids to scan (hierarchical report) |
+| `REPORT_TENANT_ID`, `REPORT_TENANT_NAME` | Tenant shown at the top of the hierarchy |
+| `REPORT_PRICE_OVERRIDES` | Optional JSON of per-model USD prices per 1M tokens (see above) |
+| `APPINSIGHTS_RESOURCE_ID` | *Legacy mode only.* ARM id of a single App Insights component; enables `/api/report*` |
 | `REPORTS_API_KEY` | API key required in the `X-Api-Key` header |
 | `REPORT_LOOKBACK_HOURS` | Default window size in hours (default `24`) |
 | `REPORT_END_OFFSET_HOURS` | Hours before *now* at which a rolling (`lookbackHours`) window ends (default `0` = right now) |
 | `REPORT_DATE` | Optional explicit report date `yyyy-MM-dd` (backfill / manual runs) |
-| `REPORT_QUERY_B64` | Optional custom KQL, base64-encoded UTF-8. Unset = bundled default query. Set by the portal / `-ReportQueryFile` |
+| `REPORT_QUERY_B64` | Optional custom KQL, base64-encoded UTF-8. Unset = automatic APIM → Foundry → GenAI metric source selection. Set by the portal / `-ReportQueryFile` |
 | `STORAGE_BLOB_ENDPOINT`, `REPORT_CONTAINER` | *Optional.* If set, the app also writes a daily CSV to Blob Storage (off by default; requires the app to reach the storage account) |
 
 To rotate the API key:
@@ -362,6 +451,18 @@ az webapp config appsettings set -g <rg> -n <app> --settings REPORTS_API_KEY=<ne
 ---
 
 ## Run locally
+
+### Regression checks
+
+```powershell
+dotnet test .\tests\TokenUsageReport.Tests\TokenUsageReport.Tests.csproj
+node --test .\tests\portal.test.cjs
+dotnet build .\gui\DeployPortal.csproj
+```
+
+These check KQL semantics against Application Insights table schemas, mocked Azure Monitor responses,
+agent/cost CSV serialization, source fallback, region selection and empty-result UI handling.
+They do not replace validating the query against the client's actual telemetry.
 
 ```powershell
 cd src/TokenUsageReport

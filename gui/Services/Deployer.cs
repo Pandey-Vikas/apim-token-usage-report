@@ -5,22 +5,24 @@ namespace DeployPortal.Services;
 
 /// <summary>Parameters collected from the GUI to drive deploy.ps1.</summary>
 public sealed record DeployRequest(
-    string AppInsightsResourceId,
     string Location,
     string SubscriptionId,
     string BaseName,
     string ResourceGroup,
     string PlanSku,
-    int LookbackHours,
-    int EndOffsetHours,
     bool RunNow,
     // Optional explicit resource names (existing-or-create). Null => derived by the script.
     string? PlanName = null,
     string? PlanResourceGroup = null,
     string? AppName = null,
-    bool GrantAllSubscriptions = false,
-    string? NewAppInsightsName = null,
-    string? ReportQuery = null);
+    // Foundry hierarchy scope: the subscriptions to report on, and what discovery found in them.
+    IReadOnlyList<string>? Subscriptions = null,
+    string? TenantId = null,
+    string? TenantName = null,
+    IReadOnlyList<string>? AppInsightsIds = null,
+    IReadOnlyList<string>? FoundryProjectIds = null,
+    bool GrantSubscriptionMonitoringReader = false,
+    bool GrantAgentReadAccess = false);
 
 /// <summary>
 /// Invokes the existing deploy.ps1 (single source of truth for provisioning + RBAC)
@@ -28,6 +30,10 @@ public sealed record DeployRequest(
 /// </summary>
 public sealed class Deployer
 {
+    private static readonly System.Text.RegularExpressions.Regex ArmId =
+        new(@"^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[A-Za-z0-9._()-]+/providers/[A-Za-z0-9._()/-]+$");
+    private static readonly System.Text.RegularExpressions.Regex TenantNamePattern = new(@"^[\w .,'()&-]{1,100}$");
+
     private readonly string _scriptPath;
     private readonly string _pwsh;
 
@@ -85,31 +91,33 @@ public sealed class Deployer
             "-BaseName", req.BaseName,
             "-ResourceGroup", req.ResourceGroup,
             "-PlanSku", req.PlanSku,
-            "-LookbackHours", req.LookbackHours.ToString(),
-            "-EndOffsetHours", req.EndOffsetHours.ToString(),
         };
         if (req.RunNow) args.Add("-RunNow");
-        if (req.GrantAllSubscriptions) args.Add("-GrantAllSubscriptions");
+        if (req.GrantSubscriptionMonitoringReader) args.Add("-GrantSubscriptionMonitoringReader");
+        if (req.GrantAgentReadAccess) args.Add("-GrantAgentReadAccess");
 
         void AddIf(string flag, string? value)
         {
             if (!string.IsNullOrWhiteSpace(value)) { args.Add(flag); args.Add(value); }
         }
-        // Existing component id, or a name to create a new one — never both.
-        if (!string.IsNullOrWhiteSpace(req.NewAppInsightsName)) AddIf("-NewAppInsightsName", req.NewAppInsightsName);
-        else AddIf("-AppInsightsResourceId", req.AppInsightsResourceId);
+
+        // The script receives lists as comma-separated strings. Only well-formed ids are forwarded.
+        var subscriptions = (req.Subscriptions ?? Array.Empty<string>()).Where(s => Guid.TryParse(s, out _)).Select(s => s.ToLowerInvariant()).Distinct().ToList();
+        if (subscriptions.Count == 0)
+        {
+            yield return "ERROR: select at least one subscription to report on.";
+            yield break;
+        }
+        static IEnumerable<string> ArmIds(IEnumerable<string>? ids) =>
+            (ids ?? Array.Empty<string>()).Where(i => ArmId.IsMatch(i)).Distinct(StringComparer.OrdinalIgnoreCase);
+        AddIf("-Subscriptions", string.Join(',', subscriptions));
+        AddIf("-AppInsightsIds", string.Join(',', ArmIds(req.AppInsightsIds)));
+        AddIf("-FoundryProjectIds", string.Join(',', ArmIds(req.FoundryProjectIds)));
+        if (req.TenantId is not null && Guid.TryParse(req.TenantId, out _)) AddIf("-TenantId", req.TenantId);
+        if (req.TenantName is not null && TenantNamePattern.IsMatch(req.TenantName)) AddIf("-TenantName", req.TenantName);
         AddIf("-PlanName", req.PlanName);
         AddIf("-PlanResourceGroup", req.PlanResourceGroup);
         AddIf("-AppName", req.AppName);
-
-        // A custom KQL query is handed to the script as a temp file (multi-line text is awkward on a command line).
-        string? queryFile = null;
-        if (!string.IsNullOrWhiteSpace(req.ReportQuery))
-        {
-            queryFile = Path.Combine(Path.GetTempPath(), $"tokrpt-report-{Guid.NewGuid():N}.kql");
-            await File.WriteAllTextAsync(queryFile, req.ReportQuery, ct);
-            AddIf("-ReportQueryFile", queryFile);
-        }
 
         var psi = new ProcessStartInfo
         {
@@ -138,14 +146,7 @@ public sealed class Deployer
 
         using var reg = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch { } });
 
-        try
-        {
-            await foreach (var line in channel.Reader.ReadAllAsync(CancellationToken.None))
-                yield return line;
-        }
-        finally
-        {
-            if (queryFile is not null) { try { File.Delete(queryFile); } catch { /* ignore */ } }
-        }
+        await foreach (var line in channel.Reader.ReadAllAsync(CancellationToken.None))
+            yield return line;
     }
 }

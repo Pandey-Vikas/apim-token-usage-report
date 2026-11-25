@@ -22,6 +22,12 @@ public sealed class InventoryItem
 /// <summary>The final report row: token usage joined with inventory metadata.</summary>
 public sealed class EnrichedRow
 {
+    public string AgentId { get; set; } = "";
+    public string AgentName { get; set; } = "";
+    public decimal? ReportedCost { get; set; }
+    public string CostCurrency { get; set; } = "";
+    public string ResourceId { get; set; } = "";
+    public string PortalUrl { get; set; } = "";
     public string SubscriptionId { get; set; } = "";
     public string DeploymentName { get; set; } = "";
     public string Backend { get; set; } = "";

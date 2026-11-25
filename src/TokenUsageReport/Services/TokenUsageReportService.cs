@@ -5,7 +5,7 @@ namespace TokenUsageReport.Services;
 
 /// <summary>The outcome of generating a report.</summary>
 public sealed record ReportResult(string ReportDate, int RowCount, string Csv, string? BlobName, Uri? BlobUri,
-    DateTimeOffset WindowStart, DateTimeOffset WindowEnd);
+    DateTimeOffset WindowStart, DateTimeOffset WindowEnd, string QuerySource, string? Warning);
 
 /// <summary>
 /// Orchestrates the token usage report:
@@ -24,7 +24,9 @@ public sealed class TokenUsageReportService
     public TokenUsageReportService(ReportConfig config, TokenCredential credential)
     {
         _config = config;
-        _appInsights = new AppInsightsClient(config.AppInsightsResourceId, credential, config.ReportQuery);
+        _appInsights = new AppInsightsClient(
+            config.AppInsightsResourceId ?? throw new InvalidOperationException("APPINSIGHTS_RESOURCE_ID is not configured."),
+            credential, config.ReportQuery);
         _inventory = new InventoryClient(credential);
         _blob = string.IsNullOrWhiteSpace(config.BlobStorageEndpoint)
             ? null
@@ -45,11 +47,13 @@ public sealed class TokenUsageReportService
         var reportDate = _config.ResolveReportDate(lookbackHours, endOffsetHours, startDate, endDate);
         Console.WriteLine($"Report date: {reportDate}  window: {start:u} -> {end:u} (UTC)");
 
-        var tokenRows = await _appInsights.QueryAsync(start, end, ct);
+        var queryResult = await _appInsights.QueryAsync(start, end, ct);
+        var tokenRows = queryResult.Rows;
+        if (queryResult.Warning is not null) Console.WriteLine($"WARN: {queryResult.Warning}");
         Console.WriteLine($"  {tokenRows.Count} token row(s) returned.");
 
         if (tokenRows.Count == 0)
-            return new ReportResult(reportDate, 0, CsvWriter.Build(Enumerable.Empty<EnrichedRow>()), null, null, start, end);
+            return new ReportResult(reportDate, 0, CsvWriter.Build(Enumerable.Empty<EnrichedRow>()), null, null, start, end, queryResult.Source, queryResult.Warning);
 
         var inventory = await _inventory.BuildInventoryAsync(ct);
         Console.WriteLine($"  {inventory.Count} deployment(s) discovered.");
@@ -57,11 +61,18 @@ public sealed class TokenUsageReportService
         var enriched = tokenRows.Select(t =>
         {
             inventory.TryGetValue(InventoryItem.MakeKey(t.Backend, t.DeploymentName), out var inv);
+            var (resourceId, portalUrl) = PortalLinks.Choose(t.ResourceId, inv?.AccountId);
             return new EnrichedRow
             {
+                ResourceId = resourceId,
+                PortalUrl = portalUrl,
                 SubscriptionId = t.SubscriptionId,
                 DeploymentName = t.DeploymentName,
                 Backend = t.Backend,
+                AgentId = t.AgentId,
+                AgentName = t.AgentName,
+                ReportedCost = t.ReportedCost,
+                CostCurrency = t.CostCurrency,
                 ModelName = inv?.ModelName ?? "",
                 AccountName = inv?.AccountName ?? "",
                 CogSvcSubscriptionId = inv?.CogSvcSubscriptionId ?? "",
@@ -101,6 +112,6 @@ public sealed class TokenUsageReportService
             Console.WriteLine($"Report written to file: {_config.OutputFile}");
         }
 
-        return new ReportResult(reportDate, enriched.Count, csv, blobUri is null ? null : blobName, blobUri, start, end);
+        return new ReportResult(reportDate, enriched.Count, csv, blobUri is null ? null : blobName, blobUri, start, end, queryResult.Source, queryResult.Warning);
     }
 }

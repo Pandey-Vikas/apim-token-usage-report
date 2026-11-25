@@ -3,30 +3,31 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Token Usage Report — Deploy</title>
-<link rel="stylesheet" href="styles.css?v=5">
+<title>Foundry Token Usage Report</title>
+<link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
-<div class="app">
+<div class="app" id="appRoot">
   <header>
-    <h1>Token Usage Report</h1>
-    <p>Sign in, pick a subscription and resource group, then deploy the token usage report app to Azure.</p>
+    <h1>Foundry Token Usage Report</h1>
+    <p>Tenant → subscriptions → resource groups → Foundry resources and their linked Application Insights → agents and models. Install it, or just open the live report.</p>
   </header>
 
   <div class="steps" id="stepsBar">
     <span id="stepDot1" class="active">1. Sign in</span>
-    <span id="stepDot2">2. Subscription</span>
-    <span id="stepDot3">3. Resource group</span>
-    <span id="stepDot4">4. Configure &amp; deploy</span>
+    <span id="stepDot2">2. Subscriptions</span>
+    <span id="stepDot3">3. Detect Foundry</span>
+    <span id="stepDot4">4. Hosting</span>
+    <span id="stepDot5">5. Deploy</span>
   </div>
 
   <!-- Landing (shown when a previous deployment is remembered) -->
   <section class="panel hidden" id="landing">
     <h2>Welcome back</h2>
-    <p class="sub">A previous deployment was found on this machine. Jump straight to your reports, or start a new setup.</p>
+    <p class="sub">A previous setup was found on this machine. Open the report, or start a new setup.</p>
     <div id="landingSummary" class="summary"></div>
     <div class="footer" style="margin-top:24px">
-      <button id="btnLandingViewer" class="primary">View reports →</button>
+      <button id="btnLandingViewer" class="primary">Open report →</button>
       <button id="btnLandingSetup" class="secondary">New setup / change sign-in</button>
     </div>
   </section>
@@ -43,7 +44,7 @@
         <select id="tenantSelect"></select>
         <button id="btnSwitchTenant" class="secondary" disabled>Switch tenant</button>
       </div>
-      <p class="hint" id="tenantHint">Pick the directory that contains the subscription you want to deploy to. If it differs from your current one, click <strong>Switch tenant</strong> — a sign-in window opens for that tenant.</p>
+      <p class="hint" id="tenantHint">Pick the directory that contains the subscriptions you want to report on. If it differs from your current one, click <strong>Switch tenant</strong> — a sign-in window opens for that tenant.</p>
     </div>
 
     <div id="tenantManual">
@@ -62,33 +63,58 @@
     <div id="loginStatus" class="status"></div>
   </section>
 
-  <!-- Step 2: Subscription -->
+  <!-- Step 2: Subscriptions (multi-select) -->
   <section class="panel hidden" id="step2">
-    <h2>Choose a subscription</h2>
-    <p class="sub" id="subSub">Resources will be created in the selected subscription.</p>
-    <label for="subscription">Subscription</label>
-    <select id="subscription"></select>
+    <h2>Choose subscriptions</h2>
+    <p class="sub" id="subSub">Tick every subscription whose Foundry usage should be in the report.</p>
+    <div class="filerow">
+      <input type="text" id="subFilter" placeholder="Filter by name or id…">
+      <button id="btnSubAll" class="secondary" type="button">Select all</button>
+      <button id="btnSubNone" class="secondary" type="button">Clear</button>
+    </div>
+    <div id="subList" class="checklist"></div>
+    <p class="hint" id="subCount"></p>
     <div class="footer">
       <button class="secondary" data-back="1">← Back</button>
-      <button id="btnSubNext" class="primary">Next →</button>
+      <button id="btnSubNext" class="primary" disabled>Detect Foundry resources →</button>
     </div>
     <div id="subStatus" class="status"></div>
   </section>
 
-  <!-- Step 3: Resource group -->
+  <!-- Step 3: Detect Foundry resources -->
   <section class="panel hidden" id="step3">
-    <h2>Resource group</h2>
-    <p class="sub">Pick an existing resource group or create a new one for the report app.</p>
+    <h2>Detected Foundry resources</h2>
+    <p class="sub">Scanning the selected subscriptions: resource groups → Foundry resources and projects → their linked Application Insights → deployed models and agents.</p>
+    <div id="discoverStatus" class="status"></div>
+    <div id="discoverSummary" class="kpis"></div>
+    <div id="discoverTree" class="tree"></div>
+    <details id="discoverWarnings" class="advanced hidden"><summary>Warnings</summary><ul id="discoverWarningList"></ul></details>
+    <div class="footer">
+      <button class="secondary" data-back="2">← Back</button>
+      <div>
+        <button id="btnDiscoverRescan" class="secondary">Scan again</button>
+        <button id="btnDiscoverNext" class="primary" disabled>Next →</button>
+      </div>
+    </div>
+  </section>
 
-    <div class="radio" data-rg-mode="existing">
+  <!-- Step 4: Where to host the report app -->
+  <section class="panel hidden" id="step4">
+    <h2>Where should the report app run?</h2>
+    <p class="sub">The report app is a small web app. Pick the subscription and resource group that will host it.</p>
+
+    <label for="hostSubscription">Hosting subscription</label>
+    <select id="hostSubscription"></select>
+
+    <div class="radio" data-rg-mode="existing" style="margin-top:16px">
       <input type="radio" name="rgMode" id="rgExisting" value="existing" checked>
-      <label for="rgExisting" style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Use existing</label>
+      <label for="rgExisting" style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Use existing resource group</label>
     </div>
     <select id="resourceGroup"></select>
 
     <div class="radio" data-rg-mode="new" style="margin-top:16px">
       <input type="radio" name="rgMode" id="rgNew" value="new">
-      <label for="rgNew" style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Create new</label>
+      <label for="rgNew" style="margin:0;text-transform:none;letter-spacing:0;color:var(--text);font-weight:400">Create new resource group</label>
     </div>
     <div id="rgNewFields" class="hidden">
       <label for="rgNewName">New resource group name</label>
@@ -98,28 +124,18 @@
     </div>
 
     <div class="footer">
-      <button class="secondary" data-back="2">← Back</button>
+      <button class="secondary" data-back="3">← Back</button>
       <button id="btnRgNext" class="primary">Next →</button>
     </div>
     <div id="rgStatus" class="status"></div>
   </section>
 
-  <!-- Step 4: Configure & deploy -->
-  <section class="panel hidden" id="step4">
+  <!-- Step 5: Configure & deploy -->
+  <section class="panel hidden" id="step5">
     <h2>Configure &amp; deploy</h2>
     <p class="sub">These map directly to the deployment script parameters.</p>
 
-    <label>Application Insights <span class="muted">(where APIM token metrics are read from)</span></label>
-    <div class="picker">
-      <label class="radioline"><input type="radio" name="aiMode" value="existing" checked> Use existing</label>
-      <select id="appInsights"></select>
-      <label class="radioline"><input type="radio" name="aiMode" value="new"> Create new</label>
-      <div id="aiNewFields" class="hidden">
-        <input type="text" id="aiNew" placeholder="Leave blank to auto-name (tokrpt-appi)">
-        <p class="hint" style="margin-left:26px">Creates the component and a Log Analytics workspace in the selected resource group and location. A new component is empty until something writes token data into it (see below).</p>
-      </div>
-    </div>
-    <div id="aiGuide" class="hint callout"></div>
+    <div id="scopeSummary" class="callout"></div>
 
     <div class="grid2">
       <div>
@@ -131,6 +147,7 @@
         <input type="text" id="baseName" value="tokrpt">
       </div>
     </div>
+    <p class="hint" id="locationHint"></p>
     <p class="hint" id="namePreview"></p>
 
     <label>App Service plan <span class="muted">(hosts the app)</span></label>
@@ -157,56 +174,65 @@
       <input type="text" id="appNew" placeholder="Leave blank to auto-name (tokrpt-app-…)">
     </div>
 
-    <details id="queryBox" class="advanced">
-      <summary>Advanced: report query (KQL) <span class="muted">— what the app runs against Application Insights</span></summary>
-      <label for="queryTemplate">Template</label>
-      <select id="queryTemplate"></select>
-      <p class="hint" id="queryDesc"></p>
-      <label for="reportQuery">Query</label>
-      <textarea id="reportQuery" rows="14" spellcheck="false"></textarea>
-      <p class="hint" id="queryHint"></p>
-      <div class="qbuttons">
-        <button type="button" id="btnValidateQuery" class="secondary">Validate query</button>
-        <button type="button" id="btnResetQuery" class="secondary">Reset to template</button>
-      </div>
-      <div id="queryStatus" class="status"></div>
-    </details>
-
-    <label for="lookback">Lookback hours <span class="muted">(default report window)</span></label>
-    <input type="text" id="lookback" value="24">
-
     <label class="checkbox">
-      <input type="checkbox" id="grantAll" checked>
-      Grant read access on all my other subscriptions in this tenant (model/SKU details for OpenAI accounts there — no manual roles)
+      <input type="checkbox" id="grantSubMon">
+      Also include Foundry projects created later (grants Monitoring Reader on the whole selected subscriptions instead of only the detected Application Insights)
     </label>
-
+    <label class="checkbox">
+      <input type="checkbox" id="grantAgents">
+      List agents that have no activity too (grants the built-in Foundry User role on each project — that role can also list account keys and connection secrets, so leave this off unless you need it)
+    </label>
     <label class="checkbox">
       <input type="checkbox" id="runNow" checked>
       Run the report once immediately after deploy
     </label>
 
     <div class="footer">
-      <button class="secondary" data-back="3">← Back</button>
+      <button class="secondary" data-back="4">← Back</button>
       <button id="btnDeploy" class="primary">Deploy to Azure</button>
     </div>
     <div id="deployStatus" class="status"></div>
     <pre id="log" class="hidden"></pre>
 
     <div id="viewerLaunch" style="margin-top:20px">
-      <button id="btnOpenViewer" class="secondary">View reports →</button>
+      <button id="btnOpenViewer" class="secondary">Open report →</button>
     </div>
   </section>
 
-  <!-- Report viewer -->
+  <!-- Report dashboard -->
   <section class="panel hidden" id="viewer">
-    <h2>CSV report viewer</h2>
-    <p class="sub">Reports are generated by the deployed app from Application Insights (using its managed identity) and served to this portal through the app's secured API — no storage account, no direct blob access.</p>
+    <div class="viewer-head">
+      <h2>Foundry token usage</h2>
+      <button class="secondary" id="btnViewerBack">← Back</button>
+    </div>
+    <div id="viewerAppInfo" class="summary"></div>
 
-    <div id="viewerAppInfo" class="summary" style="margin-bottom:16px"></div>
+    <div class="controls">
+      <div>
+        <label for="dashSource">Data source</label>
+        <select id="dashSource">
+          <option value="local">Live from Azure (my sign-in)</option>
+          <option value="app" id="optDeployedApp">Deployed app</option>
+        </select>
+      </div>
+      <div id="periodControls">
+        <label>Group by</label>
+        <div class="seg" id="grainButtons">
+          <button type="button" class="chip active" data-grain="day">Day</button>
+          <button type="button" class="chip" data-grain="week">Week</button>
+          <button type="button" class="chip" data-grain="month">Month</button>
+        </div>
+      </div>
+    </div>
+
+    <details id="scopeBox" class="advanced">
+      <summary><span id="scopeTitle">Scope: all subscriptions</span> <span class="muted">— choose which subscriptions to report on</span></summary>
+      <div id="scopeList" class="checklist"></div>
+    </details>
 
     <label>Quick range <span class="muted">(UTC)</span></label>
     <div class="chips" id="rangeChips">
-      <button type="button" class="chip" data-range="today">Today (up to now)</button>
+      <button type="button" class="chip" data-range="today">Today</button>
       <button type="button" class="chip" data-range="yesterday">Yesterday</button>
       <button type="button" class="chip" data-range="7">Last 7 days</button>
       <button type="button" class="chip" data-range="30">Last 30 days</button>
@@ -214,7 +240,6 @@
       <button type="button" class="chip" data-range="thisMonth">This month</button>
       <button type="button" class="chip" data-range="lastMonth">Last month</button>
     </div>
-
     <div class="grid2">
       <div>
         <label for="reportStartDate">Start date <span class="muted">(UTC)</span></label>
@@ -229,32 +254,72 @@
 
     <div class="footer" style="margin-top:16px">
       <div>
-        <button id="btnRunReport" class="primary">Run report now</button>
-        <button id="btnListBlobs" class="secondary">Refresh list</button>
-        <button id="btnDiagnose" class="secondary">Why no data? (Diagnose)</button>
-        <button id="btnSample" class="secondary">Show sample report</button>
+        <button id="btnRunReport" class="primary">Run report</button>
+        <button id="btnExportDetail" class="secondary" disabled>Download detail CSV</button>
+        <button id="btnExportGrouped" class="secondary" disabled>Download grouped CSV</button>
       </div>
-      <button class="secondary" id="btnViewerBack">← Back</button>
+      <label class="checkbox" style="margin:0"><input type="checkbox" id="liveMetrics"> Live (refresh 30 s after each run)</label>
     </div>
+    <div id="liveStatus" class="status info" aria-live="polite"></div>
+    <div id="viewerStatus" class="status" aria-live="polite"></div>
 
-    <div id="viewerStatus" class="status"></div>
-    <div id="diagBox" class="callout"></div>
+    <div id="dashBody" class="hidden">
+      <div id="kpiCards" class="kpis"></div>
 
-    <label for="blobSelect" id="blobSelectLabel" class="hidden">Generated reports <span class="muted">(saved in this browser; newest first)</span></label>
-    <div id="blobRow" class="hidden filerow">
-      <select id="blobSelect"></select>
-      <button id="btnLoadBlob" class="primary">Load</button>
-      <button id="btnDownload" class="secondary" disabled>Download CSV</button>
+      <div class="two-col">
+        <div>
+          <h3 id="trendTitle">Tokens by day</h3>
+          <div id="trendChart" class="chart"></div>
+          <div class="legend"><span class="sw in"></span> Input <span class="sw out"></span> Output</div>
+        </div>
+        <div>
+          <h3>Top agents by tokens</h3>
+          <div id="topAgents" class="toplist"></div>
+        </div>
+      </div>
+
+      <div class="filters">
+        <div><label for="fSubscription">Subscription</label><select id="fSubscription"></select></div>
+        <div><label for="fResourceGroup">Resource group</label><select id="fResourceGroup"></select></div>
+        <div><label for="fProject">Foundry project</label><select id="fProject"></select></div>
+        <div><label for="fAgent">Agent</label><select id="fAgent"></select></div>
+        <div><label for="fModel">Model</label><select id="fModel"></select></div>
+      </div>
+      <div class="toolbar">
+        <label class="checkbox" style="margin:0"><input type="checkbox" id="hideIdle"> Hide agents with no usage</label>
+        <label class="checkbox" style="margin:0"><input type="checkbox" id="showPeriods"> Break down by period</label>
+        <button class="secondary" id="btnExpandAll" type="button">Expand all</button>
+        <button class="secondary" id="btnCollapseAll" type="button">Collapse all</button>
+      </div>
+
+      <div class="treewrap">
+        <table class="csv tree-table">
+          <thead>
+            <tr>
+              <th>Tenant › Subscription › Resource group › Foundry project › Agent › Model</th>
+              <th class="num">Input</th><th class="num">Output</th><th class="num">Cached</th><th class="num">Total tokens</th>
+              <th class="num">Calls</th><th class="num">Est. cost</th><th class="num">Share</th><th class="num">Avg latency</th><th class="num">Errors</th><th>Last activity</th>
+            </tr>
+          </thead>
+          <tbody id="treeBody"></tbody>
+        </table>
+      </div>
+
+      <details class="advanced" id="periodBox" open>
+        <summary>By period <span class="muted" id="periodHint"></span></summary>
+        <div class="treewrap"><table class="csv"><thead><tr><th>Period</th><th class="num">Total tokens</th><th class="num">Calls</th><th class="num">Est. cost</th><th class="num">Change vs previous</th></tr></thead><tbody id="periodBody"></tbody></table></div>
+      </details>
+
+      <details class="advanced hidden" id="warningsBox"><summary id="warningsTitle">Warnings</summary><ul id="warningList"></ul></details>
+      <p class="hint" id="priceNotes"></p>
     </div>
-
-    <div id="csvTitle" class="hint" style="margin-top:16px"></div>
-    <div id="csvTableWrap" style="overflow:auto; max-height:460px; margin-top:8px"></div>
   </section>
 
   <footer class="foot">
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="app.js?v=12"></script>
+<script src="wizard.js?v=1"></script>
+<script src="dashboard.js?v=1"></script>
 </body>
 </html>

@@ -14,8 +14,10 @@
       4. Publishes the web app and sets a generated REPORTS_API_KEY.
 
     The app exposes (all require the X-Api-Key header):
-      POST /api/run                          generate the default-window report
-      GET  /api/report?lookbackHours=N       generate any window (JSON)
+      GET  /api/usage?startDate=&endDate=            Foundry hierarchy report (JSON)  [with -Subscriptions]
+      GET  /api/usage.csv?granularity=day|week|month  same, flat CSV for Power BI       [with -Subscriptions]
+      POST /api/run                          generate the default-window report         [single App Insights mode]
+      GET  /api/report?lookbackHours=N       generate any window (JSON)                 [single App Insights mode]
       GET  /api/report.csv?lookbackHours=N    same, raw CSV (Power BI Web connector friendly)
 
 .PREREQUISITES
@@ -76,7 +78,35 @@ param(
     # Optional path to a .kql file that replaces the default report query (see src/TokenUsageReport/Queries).
     # When omitted, the app uses its bundled default query (and any previously deployed custom query is cleared).
     [Parameter(Mandatory = $false)]
-    [string] $ReportQueryFile
+    [string] $ReportQueryFile,
+
+    # --- Foundry hierarchy report (Tenant > Subscriptions > Resource groups > Foundry > linked App Insights > Agents) ---
+    # Comma-separated subscription ids the report covers. When set, -AppInsightsResourceId / -NewAppInsightsName are optional.
+    [Parameter(Mandatory = $false)]
+    [string] $Subscriptions,
+
+    # Comma-separated ARM ids of the Application Insights components linked to the Foundry projects (found by the portal's discovery).
+    [Parameter(Mandatory = $false)]
+    [string] $AppInsightsIds,
+
+    # Comma-separated ARM ids of Foundry projects; only used with -GrantAgentReadAccess.
+    [Parameter(Mandatory = $false)]
+    [string] $FoundryProjectIds,
+
+    [Parameter(Mandatory = $false)]
+    [string] $TenantId,
+
+    [Parameter(Mandatory = $false)]
+    [string] $TenantName,
+
+    # Grant Monitoring Reader on the whole selected subscriptions (instead of only the discovered components), so
+    # Foundry projects created later are reported without re-running this script.
+    [switch] $GrantSubscriptionMonitoringReader,
+
+    # Opt in: grant the built-in "Foundry User" role on each Foundry project so the app can also list agents that have no
+    # activity. That role can also list account keys and connection secrets, so it is OFF by default; agents with activity
+    # are always reported from telemetry.
+    [switch] $GrantAgentReadAccess
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,15 +115,22 @@ $ProgressPreference = "SilentlyContinue"
 function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
 
 # --- Resolve defaults ------------------------------------------------------
-if (-not $AppInsightsResourceId -and -not $NewAppInsightsName) {
-    throw "Specify -AppInsightsResourceId (existing component) or -NewAppInsightsName (create a new one)."
+function Split-List([string] $Value) { @(($Value -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ }) }
+$subscriptionList = Split-List $Subscriptions
+$insightsList     = Split-List $AppInsightsIds
+$projectList      = Split-List $FoundryProjectIds
+$hierarchyMode    = $subscriptionList.Count -gt 0
+foreach ($s in $subscriptionList) { if ($s -notmatch '^[0-9a-fA-F-]{36}$') { throw "Invalid subscription id '$s' in -Subscriptions." } }
+foreach ($i in $insightsList + $projectList) { if ($i -notmatch '^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[A-Za-z0-9._()-]+/providers/[A-Za-z0-9._()/-]+$') { throw "Invalid resource id '$i'." } }
+if (-not $hierarchyMode -and -not $AppInsightsResourceId -and -not $NewAppInsightsName) {
+    throw "Specify -Subscriptions (Foundry hierarchy report), or -AppInsightsResourceId / -NewAppInsightsName (single Application Insights report)."
 }
 if ($NewAppInsightsName -and $NewAppInsightsName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,259}$') {
     throw "Invalid -NewAppInsightsName '$NewAppInsightsName'. Use letters, numbers, '-', '_' or '.'."
 }
 if (-not $ResourceGroup)     { $ResourceGroup = "$BaseName-rg" }
 $sha = [Security.Cryptography.SHA256]::Create()
-$hashSource = if ($AppInsightsResourceId) { $AppInsightsResourceId } else { "$ResourceGroup/$BaseName/$NewAppInsightsName" }
+$hashSource = if ($AppInsightsResourceId) { $AppInsightsResourceId } elseif ($hierarchyMode) { "$ResourceGroup/$BaseName/foundry" } else { "$ResourceGroup/$BaseName/$NewAppInsightsName" }
 $hashBytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($hashSource))
 $suffix = ([BitConverter]::ToString($hashBytes) -replace '-', '').Substring(0, 6).ToLower()
 if (-not $AppName)           { $AppName = "$BaseName-app-$suffix" }
@@ -218,12 +255,14 @@ $apiKey = az webapp config appsettings list --name $AppName --resource-group $Re
 if (-not $apiKey) { $apiKey = [Guid]::NewGuid().ToString('N') }
 
 Write-Step "Configuring application settings"
-az webapp config appsettings set --name $AppName --resource-group $ResourceGroup --settings `
-    "APPINSIGHTS_RESOURCE_ID=$AppInsightsResourceId" `
-    "REPORT_LOOKBACK_HOURS=$LookbackHours" `
-    "REPORT_END_OFFSET_HOURS=$EndOffsetHours" `
-    "REPORTS_API_KEY=$apiKey" `
-    --output none
+$settings = @("REPORT_LOOKBACK_HOURS=$LookbackHours", "REPORT_END_OFFSET_HOURS=$EndOffsetHours", "REPORTS_API_KEY=$apiKey")
+if ($AppInsightsResourceId) { $settings += "APPINSIGHTS_RESOURCE_ID=$AppInsightsResourceId" }
+if ($hierarchyMode) {
+    $settings += "REPORT_SUBSCRIPTIONS=$($subscriptionList -join ',')"
+    $settings += "REPORT_TENANT_ID=$(if ($TenantId) { $TenantId } else { $account.tenantId })"
+    if ($TenantName) { $settings += "REPORT_TENANT_NAME=$TenantName" }
+}
+az webapp config appsettings set --name $AppName --resource-group $ResourceGroup --settings $settings --output none
 if ($LASTEXITCODE -ne 0) { throw "Failed to set application settings on '$AppName'." }
 
 # --- Report query (custom KQL is stored base64-encoded so multi-line text survives the CLI) ---------
@@ -270,9 +309,32 @@ function Grant-Role([string] $Role, [string] $Scope, [int] $Retries = 6) {
 }
 
 Write-Step "Assigning RBAC roles to the app identity"
-Grant-Role "Monitoring Reader"  $AppInsightsResourceId
+if ($AppInsightsResourceId) { Grant-Role "Monitoring Reader" $AppInsightsResourceId }
 Grant-Role "Reader"             "/subscriptions/$SubscriptionId"
 
+# A missing permission on one scope must not abort the whole install; the report shows that scope as a warning instead.
+$skippedGrants = @()
+function Grant-RoleSoft([string] $Role, [string] $Scope) {
+    try { Grant-Role $Role $Scope -Retries 2 }
+    catch { Write-Warning "  skipped '$Role' on ${Scope}: $($_.Exception.Message)"; $script:skippedGrants += "$Role on $Scope" }
+}
+
+if ($hierarchyMode) {
+    Write-Step "Granting read access for the Foundry report ($($subscriptionList.Count) subscription(s))"
+    foreach ($s in $subscriptionList) { Grant-RoleSoft "Reader" "/subscriptions/$s" }
+    if ($GrantSubscriptionMonitoringReader) {
+        foreach ($s in $subscriptionList) { Grant-RoleSoft "Monitoring Reader" "/subscriptions/$s" }
+    } else {
+        foreach ($id in $insightsList) { Grant-RoleSoft "Monitoring Reader" $id }
+    }
+    if ($GrantAgentReadAccess) {
+        # Built-in "Foundry User" (formerly "Azure AI User"), referenced by id so the rename does not matter.
+        foreach ($id in $projectList) { Grant-RoleSoft "53ca6127-db72-4b80-b1b0-d745d6d5456d" $id }
+    }
+    if ($skippedGrants.Count -gt 0) {
+        Write-Warning "$($skippedGrants.Count) grant(s) were skipped (no permission to assign roles there). The report lists those scopes as warnings."
+    }
+}
 if ($GrantAllSubscriptions) {
     # A managed identity lives in ONE tenant and can only be granted roles in subscriptions of that same tenant,
     # so subscriptions from other tenants you are signed in to are skipped by design (not an error).
@@ -293,18 +355,21 @@ if ($GrantAllSubscriptions) {
 
 # --- Make sure Application Insights can be queried over the public endpoint (best effort) -----
 Write-Step "Checking Application Insights query access"
-try {
-    $env:AZURE_EXTENSION_USE_DYNAMIC_INSTALL = "yes_without_prompt"
-    $queryAccess = az monitor app-insights component show --ids $AppInsightsResourceId `
-        --query "publicNetworkAccessForQuery" -o tsv --only-show-errors 2>$null
-    if ($queryAccess -and $queryAccess -ne "Enabled") {
-        az monitor app-insights component update --ids $AppInsightsResourceId --query-access Enabled `
-            --output none --only-show-errors 2>$null
-        if ($LASTEXITCODE -eq 0) { Write-Host "  enabled public query access (was '$queryAccess')" }
-        else { Write-Warning "  could not enable public query access; the report may fail if the component is network-isolated." }
-    } else { Write-Host "  query access OK" }
+$insightsToCheck = @(@($AppInsightsResourceId) + $insightsList | Where-Object { $_ } | Select-Object -Unique)
+foreach ($aiId in $insightsToCheck) {
+    try {
+        $env:AZURE_EXTENSION_USE_DYNAMIC_INSTALL = "yes_without_prompt"
+        $queryAccess = az monitor app-insights component show --ids $aiId `
+            --query "publicNetworkAccessForQuery" -o tsv --only-show-errors 2>$null
+        if ($queryAccess -and $queryAccess -ne "Enabled") {
+            az monitor app-insights component update --ids $aiId --query-access Enabled `
+                --output none --only-show-errors 2>$null
+            if ($LASTEXITCODE -eq 0) { Write-Host "  enabled public query access on $(($aiId -split '/')[-1]) (was '$queryAccess')" }
+            else { Write-Warning "  could not enable public query access on $(($aiId -split '/')[-1]); the report may fail if it is network-isolated." }
+        } else { Write-Host "  query access OK: $(($aiId -split '/')[-1])" }
+    }
+    catch { Write-Warning "  skipped query-access check for $(($aiId -split '/')[-1]): $($_.Exception.Message)" }
 }
-catch { Write-Warning "  skipped query-access check: $($_.Exception.Message)" }
 
 # --- Build & package the web app -------------------------------------------
 Write-Step "Publishing .NET web app"
@@ -331,8 +396,20 @@ if ($RunNow) {
     Write-Step "Triggering an initial report run"
     Start-Sleep -Seconds 20   # allow the site to warm up after deploy
     try {
-        $resp = Invoke-RestMethod -Method Post -Uri "$appUrl/api/run" -Headers @{ 'X-Api-Key' = $apiKey } -TimeoutSec 180
-        Write-Host "  run complete: $($resp.rowCount) row(s) for $($resp.reportDate)."
+        if ($hierarchyMode) {
+            $resp = Invoke-RestMethod -Method Get -Uri "$appUrl/api/usage?lookbackHours=24" -Headers @{ 'X-Api-Key' = $apiKey } -TimeoutSec 240
+            Write-Host "  run complete: $(@($resp.facts).Count) usage row(s) across $(@($resp.scopes).Count) Foundry project(s)."
+            foreach ($w in @($resp.warnings)) { Write-Warning "[$($w.scope)] $($w.message)" }
+        }
+        else {
+            $resp = Invoke-RestMethod -Method Post -Uri "$appUrl/api/run" -Headers @{ 'X-Api-Key' = $apiKey } -TimeoutSec 180
+            if ($resp.empty) {
+                Write-Warning "Initial report returned NO DATA: $($resp.warning)"
+            } else {
+                Write-Host "  run complete: $($resp.rowCount) row(s) for $($resp.reportDate), source: $($resp.querySource)."
+                if ($resp.warning) { Write-Warning $resp.warning }
+            }
+        }
     }
     catch {
         Write-Warning "Could not trigger the initial run yet (the app may still be starting): $($_.Exception.Message)"
@@ -346,8 +423,13 @@ Remove-Item -Recurse -Force $publishDir, $zipPath -ErrorAction SilentlyContinue
 Write-Step "Done"
 Write-Host "App Service : $AppName"
 Write-Host "App URL     : $appUrl"
-Write-Host "App Insights: $AppInsightsResourceId"
+if ($AppInsightsResourceId) { Write-Host "App Insights: $AppInsightsResourceId" }
 Write-Host "Api Key     : $apiKey"
-Write-Host "Report API  : $appUrl/api/report.csv?lookbackHours=$LookbackHours  (header X-Api-Key: <key>)"
+if ($hierarchyMode) {
+    Write-Host "Scope       : $($subscriptionList.Count) subscription(s), $($insightsList.Count) linked Application Insights component(s)"
+    Write-Host "Report API  : $appUrl/api/usage?lookbackHours=24  (JSON)  |  $appUrl/api/usage.csv?granularity=week&lookbackHours=720  (CSV for Power BI)  (header X-Api-Key: <key>)"
+} else {
+    Write-Host "Report API  : $appUrl/api/report.csv?lookbackHours=$LookbackHours  (header X-Api-Key: <key>)"
+}
 Write-Host "`nThe app generates reports on demand from Application Insights and serves them through its"
 Write-Host "secured API. No storage account, no private endpoint — the portal and Power BI call the app."

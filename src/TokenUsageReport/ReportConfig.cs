@@ -6,8 +6,17 @@ namespace TokenUsageReport;
 /// </summary>
 public sealed class ReportConfig
 {
-    /// <summary>ARM resource id of the Application Insights component to query.</summary>
-    public required string AppInsightsResourceId { get; init; }
+    /// <summary>ARM resource id of a single Application Insights component for the legacy (APIM / single-component) report.</summary>
+    public string? AppInsightsResourceId { get; init; }
+
+    /// <summary>Subscriptions covered by the Foundry hierarchy report (REPORT_SUBSCRIPTIONS).</summary>
+    public IReadOnlyList<string> Subscriptions { get; init; } = Array.Empty<string>();
+
+    public string TenantId { get; init; } = "";
+    public string TenantName { get; init; } = "";
+
+    /// <summary>Customer-supplied USD-per-1M-token prices that take precedence over Azure list prices.</summary>
+    public IReadOnlyDictionary<string, Reporting.ModelPrice> PriceOverrides { get; init; } = new Dictionary<string, Reporting.ModelPrice>();
 
     /// <summary>Blob service endpoint, e.g. https://mystorage.blob.core.windows.net/. Optional when writing to a local file.</summary>
     public string? BlobStorageEndpoint { get; init; }
@@ -41,14 +50,6 @@ public sealed class ReportConfig
 
     public static ReportConfig FromEnvironment()
     {
-        string Require(string name)
-        {
-            var v = Environment.GetEnvironmentVariable(name);
-            if (string.IsNullOrWhiteSpace(v))
-                throw new InvalidOperationException($"Required setting '{name}' is not configured.");
-            return v.Trim();
-        }
-
         string? Optional(string name)
         {
             var v = Environment.GetEnvironmentVariable(name);
@@ -65,9 +66,20 @@ public sealed class ReportConfig
         var endpoint = Optional("STORAGE_BLOB_ENDPOINT");
         if (endpoint is not null && !endpoint.EndsWith('/')) endpoint += "/";
 
+        var subscriptions = (Optional("REPORT_SUBSCRIPTIONS") ?? "")
+            .Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(s => Guid.TryParse(s, out _)).Select(s => s.ToLowerInvariant()).Distinct().ToList();
+        var legacyAppInsights = Optional("APPINSIGHTS_RESOURCE_ID");
+        if (subscriptions.Count == 0 && legacyAppInsights is null)
+            throw new InvalidOperationException("Configure 'REPORT_SUBSCRIPTIONS' (Foundry hierarchy report) or 'APPINSIGHTS_RESOURCE_ID' (single Application Insights report).");
+
         return new ReportConfig
         {
-            AppInsightsResourceId = Require("APPINSIGHTS_RESOURCE_ID"),
+            AppInsightsResourceId = legacyAppInsights,
+            Subscriptions = subscriptions,
+            TenantId = Optional("REPORT_TENANT_ID") ?? "",
+            TenantName = Optional("REPORT_TENANT_NAME") ?? "",
+            PriceOverrides = Reporting.PriceBook.ParseOverrides(Optional("REPORT_PRICE_OVERRIDES")),
             BlobStorageEndpoint = endpoint,
             OutputFile = outputFile,
             Container = Optional("REPORT_CONTAINER") ?? "token-reports",

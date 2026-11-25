@@ -1,17 +1,73 @@
-// Foundry / GenAI telemetry (STARTING POINT - verify against your data before relying on it).
-// Reads OpenTelemetry GenAI spans (gen_ai.* attributes) that Foundry agents / Azure OpenAI SDK tracing write to
-// Application Insights, instead of APIM metrics. The report window is applied by the app; do not add a time filter.
-// The query MUST return these columns:
-//   SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
-dependencies
-| extend Prompt = tolong(customDimensions['gen_ai.usage.input_tokens']),
-         Completion = tolong(customDimensions['gen_ai.usage.output_tokens'])
-| where isnotnull(Prompt) or isnotnull(Completion)
-| extend DeploymentName = coalesce(tostring(customDimensions['gen_ai.response.model']), tostring(customDimensions['gen_ai.request.model'])),
-         Backend = coalesce(tostring(customDimensions['server.address']), tostring(target)),
+// Foundry / GenAI usage. The caller supplies the time window.
+// Read spans and usage events, not prompt/message content.
+let spans = materialize(
+    union withsource=SourceTable dependencies, requests, traces, customEvents
+    | extend d = customDimensions, m = customMeasurements
+    | extend AgentId = coalesce(tostring(d['gen_ai.agent.id']), tostring(d['azure.ai.agentserver.agent_id'])),
+             AgentName = coalesce(tostring(d['azure.ai.agentserver.agent_name']), tostring(d['gen_ai.agent.name'])),
+             SpanId = coalesce(tostring(column_ifexists('id', '')), tostring(d['span_id'])),
+             ParentId = tostring(operation_ParentId),
+             TraceId = tostring(operation_Id),
+             Operation = tostring(d['gen_ai.operation.name'])
+    | extend Prompt = coalesce(tolong(d['gen_ai.usage.input_tokens']), tolong(d['gen_ai.usage.prompt_tokens']),
+                               tolong(d['llm.usage.prompt_tokens']), tolong(d['llm.token_count.prompt']), tolong(m['gen_ai.usage.input_tokens'])),
+             Completion = coalesce(tolong(d['gen_ai.usage.output_tokens']), tolong(d['gen_ai.usage.completion_tokens']),
+                                   tolong(d['llm.usage.completion_tokens']), tolong(d['llm.token_count.completion']), tolong(m['gen_ai.usage.output_tokens'])),
+             Cached = coalesce(tolong(d['gen_ai.usage.cache_read.input_tokens']), tolong(d['gen_ai.usage.input_tokens_details.cached_tokens']),
+                               tolong(d['llm.token_count.prompt_details.cache_read']), long(0)),
+             Cost = coalesce(todecimal(d['gen_ai.usage.cost']), todecimal(d['llm.cost.total']),
+                             todecimal(m['gen_ai.usage.cost']), todecimal(m['llm.cost.total'])),
+             CostCurrency = coalesce(tostring(d['gen_ai.usage.cost.currency']), tostring(d['llm.cost.currency'])),
+             DeploymentName = coalesce(tostring(d['gen_ai.request.deployment_name']), tostring(d['gen_ai.request.model']), tostring(d['gen_ai.response.model']), tostring(d['llm.model_name'])),
+             Backend = coalesce(tostring(d['server.address']), tostring(d['gen_ai.system.endpoint']), tostring(column_ifexists('target', ''))),
+             ResourceId = coalesce(tostring(d['gen_ai.azure_ai_project.id']), tostring(d['microsoft.foundry.project.id']))
+    | extend RecordKey = iff(isnotempty(SpanId), strcat(TraceId, '/', SpanId), strcat(SourceTable, '/', tostring(itemId)))
+    | project timestamp, SourceTable, TraceId, SpanId, ParentId, RecordKey, Operation, AgentId, AgentName,
+              Prompt, Completion, Cached, Cost, CostCurrency, DeploymentName, Backend, ResourceId
+);
+let parents = spans
+    | where isnotempty(SpanId) and (isnotempty(AgentId) or isnotempty(AgentName))
+    | summarize arg_max(timestamp, AgentId, AgentName) by TraceId, ParentSpanId = SpanId
+    | project TraceId, ParentSpanId, ParentAgentId = AgentId, ParentAgentName = AgentName;
+// A trace-wide fallback is safe only when it identifies a single agent.
+let agents = spans
+    | where isnotempty(TraceId) and (isnotempty(AgentId) or isnotempty(AgentName))
+    | summarize by TraceId, AgentId, AgentName
+    | summarize AgentCount = count(), take_any(AgentId, AgentName) by TraceId
+    | where AgentCount == 1
+    | project TraceId, TraceAgentId = AgentId, TraceAgentName = AgentName;
+let usage = materialize(spans
+    | where isnotnull(Prompt) or isnotnull(Completion)
+    | summarize arg_max(timestamp, *) by RecordKey
+);
+let modelTraces = usage
+    | where Operation !in ('invoke_agent', 'execute_agent', 'run_agent', 'execute_tool') and isnotempty(TraceId)
+    | distinct TraceId
+    | extend HasModelUsage = true;
+let usageParents = usage
+    | where isnotempty(ParentId)
+    | distinct TraceId, UsageParentId = ParentId
+    | extend HasChildUsage = true;
+usage
+| join kind=leftouter modelTraces on TraceId
+| where Operation !in ('invoke_agent', 'execute_agent', 'run_agent', 'execute_tool') or isempty(TraceId) or isnull(HasModelUsage)
+| join kind=leftouter usageParents on TraceId, $left.SpanId == $right.UsageParentId
+| where isnull(HasChildUsage)
+| join kind=leftouter parents on TraceId, $left.ParentId == $right.ParentSpanId
+| join kind=leftouter agents on TraceId
+| extend OwnAgent = isnotempty(AgentId) or isnotempty(AgentName),
+         ParentAgent = isnotempty(ParentAgentId) or isnotempty(ParentAgentName)
+| extend AgentId = case(OwnAgent, AgentId, ParentAgent, ParentAgentId, TraceAgentId),
+         AgentName = case(OwnAgent, AgentName, ParentAgent, ParentAgentName, TraceAgentName),
          SubscriptionId = ''
-| summarize PromptTokens = sum(coalesce(Prompt, 0)), CompletionTokens = sum(coalesce(Completion, 0)), Calls = count()
-    by SubscriptionId, DeploymentName, Backend
-| extend CachedTokens = long(0), TotalTokens = PromptTokens + CompletionTokens
-| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls
+| summarize PromptTokens = sum(coalesce(Prompt, 0)), CompletionTokens = sum(coalesce(Completion, 0)),
+            CachedTokens = sum(Cached), Calls = count(), CostRows = countif(isnotnull(Cost)), CostSum = sum(Cost)
+    by SubscriptionId, AgentId, AgentName, DeploymentName, Backend, CostCurrency, ResourceId
+// Link only well-formed ARM ids: this value comes from telemetry, so never build a URL from arbitrary text.
+| extend TotalTokens = PromptTokens + CompletionTokens,
+         ReportedCost = iff(CostRows == Calls, CostSum, decimal(null)),
+         PortalUrl = iff(ResourceId matches regex @'^/subscriptions/[0-9a-fA-F-]{36}/resourceGroups/[A-Za-z0-9._()-]+/providers/[A-Za-z0-9._()/-]+$',
+                         strcat('https://portal.azure.com/#resource', ResourceId, '/overview'), '')
+| project SubscriptionId, DeploymentName, Backend, PromptTokens, CompletionTokens, CachedTokens, TotalTokens, Calls,
+          AgentId, AgentName, ReportedCost, CostCurrency, ResourceId, PortalUrl
 | order by TotalTokens desc

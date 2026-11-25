@@ -2,4 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/TokenUsageReport/TokenUsageReport.csproj" />
   </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TokenUsageReport.Tests/TokenUsageReport.Tests.csproj" />
+  </Folder>
 </Solution>

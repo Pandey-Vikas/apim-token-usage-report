@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <None Update="Queries\*.kql" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="Queries\foundry-usage.kql" LogicalName="foundry-usage.kql" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,0 +1,79 @@
+// Foundry agent usage by day, for the hierarchical report. The caller supplies the time window.
+// Reads usage counts and identity attributes only, never prompt or message content.
+// Same attribution rules as foundry-genai.kql: duplicate spans are collapsed, parent agent/tool totals are
+// dropped when child model calls exist, and an agent is inherited from its parent span or a single-agent trace.
+let spans = materialize(
+    union withsource=SourceTable dependencies, requests, traces, customEvents
+    | extend d = customDimensions, m = customMeasurements
+    | extend AgentId = coalesce(tostring(d['gen_ai.agent.id']), tostring(d['azure.ai.agentserver.agent_id'])),
+             AgentName = coalesce(tostring(d['azure.ai.agentserver.agent_name']), tostring(d['gen_ai.agent.name'])),
+             SpanId = coalesce(tostring(column_ifexists('id', '')), tostring(d['span_id'])),
+             ParentId = tostring(operation_ParentId),
+             TraceId = tostring(operation_Id),
+             Operation = tostring(d['gen_ai.operation.name'])
+    | extend Prompt = coalesce(tolong(d['gen_ai.usage.input_tokens']), tolong(d['gen_ai.usage.prompt_tokens']),
+                               tolong(d['llm.usage.prompt_tokens']), tolong(d['llm.token_count.prompt']), tolong(m['gen_ai.usage.input_tokens'])),
+             Completion = coalesce(tolong(d['gen_ai.usage.output_tokens']), tolong(d['gen_ai.usage.completion_tokens']),
+                                   tolong(d['llm.usage.completion_tokens']), tolong(d['llm.token_count.completion']), tolong(m['gen_ai.usage.output_tokens'])),
+             Cached = coalesce(tolong(d['gen_ai.usage.cache_read.input_tokens']), tolong(d['gen_ai.usage.cached_tokens']),
+                               tolong(d['gen_ai.usage.input_tokens_details.cached_tokens']),
+                               tolong(d['llm.token_count.prompt_details.cache_read']), long(0)),
+             Cost = coalesce(todecimal(d['gen_ai.usage.cost']), todecimal(d['llm.cost.total']),
+                             todecimal(m['gen_ai.usage.cost']), todecimal(m['llm.cost.total'])),
+             CostCurrency = coalesce(tostring(d['gen_ai.usage.cost.currency']), tostring(d['llm.cost.currency'])),
+             Model = coalesce(tostring(d['gen_ai.response.model']), tostring(d['gen_ai.request.model']), tostring(d['llm.model_name'])),
+             Deployment = coalesce(tostring(d['gen_ai.request.deployment_name']), tostring(d['gen_ai.request.model']),
+                                   tostring(d['gen_ai.response.model']), tostring(d['llm.model_name'])),
+             Backend = coalesce(tostring(d['server.address']), tostring(d['gen_ai.system.endpoint']), tostring(column_ifexists('target', ''))),
+             ProjectId = coalesce(tostring(d['gen_ai.azure_ai_project.id']), tostring(d['microsoft.foundry.project.id'])),
+             DurationMs = todouble(column_ifexists('duration', real(null))),
+             Failed = tostring(column_ifexists('success', '')) == 'False' or isnotempty(tostring(d['error.type']))
+    | extend RecordKey = iff(isnotempty(SpanId), strcat(TraceId, '/', SpanId), strcat(SourceTable, '/', tostring(itemId)))
+    | project timestamp, SourceTable, TraceId, SpanId, ParentId, RecordKey, Operation, AgentId, AgentName,
+              Prompt, Completion, Cached, Cost, CostCurrency, Model, Deployment, Backend, ProjectId, DurationMs, Failed
+);
+let parents = spans
+    | where isnotempty(SpanId) and (isnotempty(AgentId) or isnotempty(AgentName))
+    | summarize arg_max(timestamp, AgentId, AgentName) by TraceId, ParentSpanId = SpanId
+    | project TraceId, ParentSpanId, ParentAgentId = AgentId, ParentAgentName = AgentName;
+// A trace-wide fallback is safe only when it identifies a single agent.
+let agents = spans
+    | where isnotempty(TraceId) and (isnotempty(AgentId) or isnotempty(AgentName))
+    | summarize by TraceId, AgentId, AgentName
+    | summarize AgentCount = count(), take_any(AgentId, AgentName) by TraceId
+    | where AgentCount == 1
+    | project TraceId, TraceAgentId = AgentId, TraceAgentName = AgentName;
+let usage = materialize(spans
+    | where isnotnull(Prompt) or isnotnull(Completion)
+    | summarize arg_max(timestamp, *) by RecordKey
+);
+let modelTraces = usage
+    | where Operation !in ('invoke_agent', 'execute_agent', 'run_agent', 'execute_tool') and isnotempty(TraceId)
+    | distinct TraceId
+    | extend HasModelUsage = true;
+let usageParents = usage
+    | where isnotempty(ParentId)
+    | distinct TraceId, UsageParentId = ParentId
+    | extend HasChildUsage = true;
+usage
+| join kind=leftouter modelTraces on TraceId
+| where Operation !in ('invoke_agent', 'execute_agent', 'run_agent', 'execute_tool') or isempty(TraceId) or isnull(HasModelUsage)
+| join kind=leftouter usageParents on TraceId, $left.SpanId == $right.UsageParentId
+| where isnull(HasChildUsage)
+| join kind=leftouter parents on TraceId, $left.ParentId == $right.ParentSpanId
+| join kind=leftouter agents on TraceId
+| extend OwnAgent = isnotempty(AgentId) or isnotempty(AgentName),
+         ParentAgent = isnotempty(ParentAgentId) or isnotempty(ParentAgentName)
+| extend AgentId = case(OwnAgent, AgentId, ParentAgent, ParentAgentId, TraceAgentId),
+         AgentName = case(OwnAgent, AgentName, ParentAgent, ParentAgentName, TraceAgentName)
+// "name:version" ids are merged across versions so an agent is one row regardless of redeploys.
+| extend AgentId = tostring(split(AgentId, ':')[0])
+| summarize PromptTokens = sum(coalesce(Prompt, 0)), CompletionTokens = sum(coalesce(Completion, 0)), CachedTokens = sum(Cached),
+            Calls = count(), Errors = countif(Failed), DurationMsSum = sum(DurationMs),
+            CostRows = countif(isnotnull(Cost)), CostSum = sum(Cost),
+            FirstSeen = min(timestamp), LastSeen = max(timestamp)
+    by Day = startofday(timestamp), ProjectId, AgentId, AgentName, Model, Deployment, Backend, CostCurrency
+| extend ReportedCost = iff(CostRows == Calls, CostSum, decimal(null))
+| project Day, ProjectId, AgentId, AgentName, Model, Deployment, Backend, PromptTokens, CompletionTokens, CachedTokens,
+          Calls, Errors, DurationMsSum, ReportedCost, CostCurrency, FirstSeen, LastSeen
+| order by Day asc, PromptTokens desc

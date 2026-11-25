@@ -12,6 +12,7 @@ public static class CsvWriter
         "SubscriptionId", "DeploymentName", "Backend", "ModelName", "AccountName",
         "CogSvcSubscriptionId", "AccountId", "SkuName", "SkuCapacity",
         "PromptTokens", "CompletionTokens", "CachedTokens", "TotalTokens", "Calls",
+        "AgentId", "AgentName", "ReportedCost", "CostCurrency", "ResourceId", "PortalUrl",
     };
 
     public static string Build(IEnumerable<EnrichedRow> rows)
@@ -37,6 +38,12 @@ public static class CsvWriter
                 r.CachedTokens.ToString(CultureInfo.InvariantCulture),
                 r.TotalTokens.ToString(CultureInfo.InvariantCulture),
                 r.Calls.ToString(CultureInfo.InvariantCulture),
+                r.AgentId,
+                r.AgentName,
+                r.ReportedCost?.ToString(CultureInfo.InvariantCulture) ?? "",
+                r.CostCurrency,
+                r.ResourceId,
+                r.PortalUrl,
             };
             sb.AppendLine(string.Join(",", fields.Select(Escape)));
         }
