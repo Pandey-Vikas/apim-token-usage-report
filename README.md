@@ -27,16 +27,29 @@ Application Insights) → Projects → Agents → Models**, with Daily / Weekly 
    Listing agents that have no activity is opt-in (*Foundry User* role on each project) because that role can also
    list account keys and connection secrets.
 
-**Dashboard** – KPI cards, a Day/Week/Month chart, top agents, filters (subscription, resource group, project,
-agent, model) and an expandable Tenant › Subscription › RG › Project › Agent › Model tree with Azure portal links and
-"Break down by period". Detail CSV and grouped CSV export are built in. Cost uses the cost reported in telemetry when present;
+**Dashboard** – a Power BI-style report, top to bottom: **Scope** → **Date range** (with the *Quick range* buttons on the same line) → **Filters**
+(subscription, resource group, project, agent, model, plus **Clear filters**) → **Token breakdown** cards → a multi-line **chart** → **Top 5 agents** and
+**Top 5 models** → the **Detailed report** (expandable Tenant › Subscription › RG › Project › Agent › Model matrix with Azure portal links and
+"Break down by period"), then a by-period table. Detail CSV and grouped CSV export are built in.
+
+- **Token breakdown:** total, input (prompt), output (completion), cached input and uncached input are always shown; *reasoning* and *cache write* tokens appear
+  only when your telemetry reports them (Foundry traces currently carry input, output and cached tokens only). Each card has its own colour and toggles that line
+  on the chart. The chart has Day/Week/Month grain, a legend, and a hover read-out of every line.
+- **Top 5:** clicking an agent or model filters the whole dashboard (cards, chart, matrix); click again or use *Clear filters* to remove it.
+- **Latency:** *Avg model latency* is the average time of one model (LLM) request. *Avg agent run* is the average end-to-end time of a whole agent run
+  (`invoke_agent` span: all model calls, tool calls and waits), so it is usually longer. Each run's time is counted once, on its first model call.
+- **Live refresh:** tick *Live refresh every* and choose a number of **minutes or hours** (1 minute to 24 hours, default 5 minutes, remembered in the browser).
+  Every refresh re-scans Azure and queries every linked Application Insights, so use a longer interval to reduce load.
+
+Cost uses the cost reported in telemetry when present;
 otherwise it is a **list-price estimate** from the Azure Retail Prices API (shown as `n/a` when no price exists, e.g. model-router,
 gpt-5 and gpt-4.1 at the time of writing). Override prices with `REPORT_PRICE_OVERRIDES`
 (`{"model":{"input":x,"cachedInput":y,"output":z}}`, USD per 1M tokens). The data source can be *this machine* (your
 Azure CLI identity) or the deployed app.
 
 Each row carries Tenant, Subscription, Resource group, Foundry resource, Project, Application Insights, Agent, Model,
-Deployment, backend, calls, errors, average latency, input/output/cached/total tokens and cost.
+Deployment, input/output/cached/uncached/(reasoning, cache-write) tokens, total, cache-hit %, tokens per call, calls, errors,
+average **model-call** latency, agent runs, average **agent-run** latency and cost.
 
 API (deployed app, `X-Api-Key` required): `GET /api/usage` (JSON) and `GET /api/usage.csv?granularity=day|week|month`,
 both taking `lookbackHours` or `startDate`/`endDate`. Weeks start on Monday (UTC).

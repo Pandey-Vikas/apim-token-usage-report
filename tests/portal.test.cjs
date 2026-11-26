@@ -12,7 +12,8 @@ function portal(responses = {}) {
       this.options = [];   // children
       this.dataset = {};
       this.listeners = {};
-      this.style = {};
+      this.style = { setProperty(name, value) { this[name] = value; } };
+      this.attrs = {};
       this._classes = new Set();
       this._value = '';
       this.classList = {
@@ -32,6 +33,7 @@ function portal(responses = {}) {
     }
     get selectedIndex() { return this.options.indexOf(this.selectedOptions[0]); }
     appendChild(o) { this.options.push(o); return o; }
+    setAttribute(name, value) { this.attrs[name] = value; }
     remove() {}
     click() {}
     addEventListener(event, callback) { this.listeners[event] = callback; }
@@ -336,19 +338,25 @@ test('detail CSV groups by week, sums tokens, blanks partial cost and defuses sp
   }]);
   const csv = p.run('detailCsv(flatten(window.report), "week")');
   const lines = csv.trim().split('\r\n');
-  assert.equal(lines[0], 'TenantId,Tenant,SubscriptionId,Subscription,ResourceGroup,FoundryResource,FoundryProject,AppInsights,Agent,AgentId,Model,Deployment,PeriodStart,PromptTokens,CompletionTokens,CachedTokens,TotalTokens,Calls,Errors,AvgLatencyMs,ReportedCost,EstimatedCostUsd,CostBasis,FirstSeen,LastSeen,ProjectPortalUrl,AppInsightsPortalUrl');
+  assert.equal(lines[0], 'TenantId,Tenant,SubscriptionId,Subscription,ResourceGroup,FoundryResource,FoundryProject,AppInsights,Agent,AgentId,Model,Deployment,PeriodStart,PromptTokens,CompletionTokens,CachedTokens,UncachedPromptTokens,ReasoningTokens,CacheWriteTokens,TotalTokens,CacheHitPercent,AvgTokensPerCall,Calls,Errors,AvgModelCallLatencyMs,AgentRuns,AvgAgentRunLatencyMs,ReportedCost,EstimatedCostUsd,CostBasis,FirstSeen,LastSeen,ProjectPortalUrl,AppInsightsPortalUrl');
   assert.equal(lines.length, 3); // header, Alpha (two days merged into one week), the unpriced agent
+  const header = lines[0].split(',');
+  const col = (line, name) => line.split(',')[header.indexOf(name)];
   const alpha = lines.find((l) => l.includes(',Alpha,'));
-  const f = alpha.split(',');
-  assert.equal(f[12], '2026-11-23');
-  assert.equal(f[16], '1650'); // TotalTokens across both days
-  assert.equal(f[17], '3');    // Calls
-  assert.equal(f[19], '533.3'); // weighted latency: 1600 ms / 3 calls
-  assert.equal(f[21], '0.00031');
+  assert.equal(col(alpha, 'PeriodStart'), '2026-11-23');
+  assert.equal(col(alpha, 'TotalTokens'), '1650');          // across both days
+  assert.equal(col(alpha, 'UncachedPromptTokens'), '1300'); // 1500 input − 200 cached
+  assert.equal(col(alpha, 'CacheHitPercent'), '13.3');
+  assert.equal(col(alpha, 'AvgTokensPerCall'), '550');
+  assert.equal(col(alpha, 'Calls'), '3');
+  assert.equal(col(alpha, 'AvgModelCallLatencyMs'), '533.3'); // weighted: 1600 ms / 3 calls
+  assert.equal(col(alpha, 'AgentRuns'), '0');
+  assert.equal(col(alpha, 'AvgAgentRunLatencyMs'), '');       // no run data => blank, never 0
+  assert.equal(col(alpha, 'EstimatedCostUsd'), '0.00031');
   assert.match(csv, /"'=HYPERLINK\(""http:\/\/evil""\)"/);
   assert.ok(!lines.some((l) => l.includes('Sleepy')), 'idle agents are not usage rows');
-  const unpriced = lines.find((l) => l.includes('HYPERLINK')).split(',');
-  assert.equal(unpriced[21], ''); // no estimate => blank, never 0
+  const unpriced = lines.find((l) => l.includes('HYPERLINK'));
+  assert.equal(col(unpriced, 'EstimatedCostUsd'), ''); // no estimate => blank, never 0
 });
 
 test('grouped CSV exports every level with its path and share of the total', () => {
@@ -361,8 +369,10 @@ test('grouped CSV exports every level with its path and share of the total', () 
   assert.deepEqual([...new Set(levels)], ['Tenant', 'Subscription', 'Resource group', 'Foundry project', 'Agent', 'Model']);
   const model = lines.find((l) => l.startsWith('Model,'));
   const f = model.split(',');
+  const header = lines[0].split(',');
   assert.deepEqual([f[2], f[3], f[4], f[5], f[6]], ['Tenant: Contoso', 'Prod', 'rg1', 'acct1 / p1', 'Alpha']);
-  assert.equal(f[17], '100'); // share of total
+  assert.equal(f[header.indexOf('SharePercent')], '100');
+  assert.equal(f[header.indexOf('UncachedInputTokens')], '1300');
 });
 
 test('week breakdown adds period rows under each leaf, in chronological order', () => {
@@ -399,7 +409,10 @@ test('running the report sends the scope, dates and tenant and renders KPIs, cha
   assert.match(p.get('viewerStatus').textContent, /2 usage row\(s\) across 2 Foundry project\(s\)/);
   assert.match(p.get('kpiCards').allText, /1,650/);
   assert.match(p.get('topAgents').allText, /Alpha/);
-  assert.ok(p.get('trendChart').options.length >= 7, 'one bar per day of the window');
+  assert.match(p.get('topModels').allText, /gpt-4o-mini-2024-07-18/);
+  const svg = p.get('trendChart').innerHTML;
+  assert.equal((svg.match(/<polyline/g) || []).length, 5, 'one line per token measure (total, input, output, cached, uncached)');
+  assert.equal((svg.match(/class="xlab"/g) || []).length, 8, 'one x label per day of the window (23–30 Nov)');
   assert.match(p.get('treeBody').allText, /Tenant: Contoso/);
   assert.match(p.get('treeBody').allText, /Prod/);
   assert.equal(p.get('btnExportDetail').disabled, false);
@@ -471,17 +484,132 @@ test('live mode runs today, never overlaps a run, retries after errors and stops
   assert.equal(p.get('btnRunReport').disabled, false);
 });
 
-test('live refresh uses today and schedules the next run 30 seconds after the previous one', async () => {
+test('live refresh uses today and waits for the chosen interval before the next run', async () => {
   const p = dashboardPortal({ '/api/usage': report() });
   p.get('liveMetrics').checked = true;
+  p.get('liveEvery').value = '2';
+  p.get('liveUnit').options = [{ value: '60000', selected: true }, { value: '3600000' }];
   await p.context.refreshLive(0);
   const today = new Date().toISOString().slice(0, 10);
   const req = p.requests.find((r) => r.url === '/api/usage').body;
   assert.deepEqual([req.startDate, req.endDate], [today, today]);
   const [timer] = [...p.timers.values()];
-  assert.equal(timer.delay, 30000);
+  assert.equal(timer.delay, 2 * 60000);
+  assert.match(p.get('liveStatus').textContent, /Next check at .* \(every 2 minutes\)/);
   p.context.stopLive();
   assert.equal(p.timers.size, 0);
+});
+
+test('the live interval accepts minutes or hours, never goes below one minute or above a day, and falls back when unusable', () => {
+  const p = portal();
+  const interval = (every, unit) => {
+    p.get('liveEvery').value = every;
+    p.get('liveUnit').options = [{ value: unit, selected: true }];
+    return p.run('liveIntervalMs()');
+  };
+  assert.equal(interval('5', '60000'), 5 * 60000);
+  assert.equal(interval('2', '3600000'), 2 * 3600000);
+  assert.equal(interval('0.4', '60000'), 60000);       // below the minimum is raised to one minute
+  assert.equal(interval('999', '3600000'), 86400000);  // capped at 24 hours
+  assert.equal(interval('abc', '60000'), 5 * 60000);   // unusable input falls back to the default
+  assert.equal(p.run('describeInterval(3600000)'), '1 hour');
+  assert.equal(p.run('describeInterval(120000)'), '2 minutes');
+});
+
+test('token measures: derived series, optional ones only when reported, and tidy axis maxima', () => {
+  const p = portal();
+  const t = { prompt: 1000, completion: 100, cached: 300, reasoning: 0, cacheWrite: 0, total: 1100 };
+  assert.equal(p.run(`uncachedOf(${JSON.stringify(t)})`), 700);
+  assert.equal(p.run('uncachedOf({ prompt: 10, cached: 50 })'), 0); // never negative
+  const ids = (totals) => JSON.parse(p.run(`JSON.stringify(availableSeries(${JSON.stringify(totals)}).map((s) => s.id))`));
+  assert.deepEqual(ids(t), ['total', 'prompt', 'completion', 'cached', 'uncached']);
+  assert.deepEqual(ids({ ...t, reasoning: 40, cacheWrite: 5 }), ['total', 'prompt', 'completion', 'cached', 'uncached', 'reasoning', 'cacheWrite']);
+  const nice = (v) => p.run(`niceMax(${v})`);
+  assert.deepEqual([nice(0), nice(7), nice(1100), nice(22281), nice(2400)], [1, 10, 2000, 25000, 2500]);
+  assert.equal(p.run('fmtCompact(22281)'), '22.3K');
+  assert.equal(p.run('fmtMs(13893)'), '13.9 s');
+  assert.equal(p.run('fmtMs(506.15)'), '506 ms');
+});
+
+test('the trend has one point per period with zeros for gaps and a value for every measure', () => {
+  const p = portal();
+  p.context.window.report = report();
+  const trend = JSON.parse(p.run(`(() => {
+    const t = trendSeries(flatten(window.report), 'day', '2026-11-22', '2026-11-25');
+    return JSON.stringify({ periods: t.periods, total: t.values.total, prompt: t.values.prompt, cached: t.values.cached, uncached: t.values.uncached });
+  })()`));
+  assert.deepEqual(trend.periods, ['2026-11-22', '2026-11-23', '2026-11-24', '2026-11-25']);
+  assert.deepEqual(trend.total, [0, 1100, 550, 0]);
+  assert.deepEqual(trend.prompt, [0, 1000, 500, 0]);
+  assert.deepEqual(trend.cached, [0, 200, 0, 0]);
+  assert.deepEqual(trend.uncached, [0, 800, 500, 0]);
+  const weekly = JSON.parse(p.run(`JSON.stringify(trendSeries(flatten(window.report), 'week', '2026-11-23', '2026-11-30').values.total)`));
+  assert.deepEqual(weekly, [1650, 0]);
+});
+
+test('top five ranks by total tokens, ignores idle rows and flags unnamed usage', () => {
+  const p = portal();
+  const row = (agent, total, prompt = total) => ({ kind: 'usage', agent, total, prompt, completion: total - prompt, cached: 0 });
+  const rows = [row('A', 10), row('B', 50), row('A', 15), row('C', 5), row('D', 1), row('E', 2), row('F', 3), row('', 40), { kind: 'idle', agent: 'Z', total: 0 }];
+  const top = JSON.parse(p.run(`JSON.stringify(topN(${JSON.stringify(rows)}, (r) => r.agent, 5).map((e) => [e.name, e.totals.total, Math.round(e.share * 100)]))`));
+  assert.deepEqual(top.map((e) => e[0]), ['B', '', 'A', 'C', 'F']);
+  assert.deepEqual(top.map((e) => e[1]), [50, 40, 25, 5, 3]);
+  assert.equal(top[0][2], 40); // share of all usage (50 of 126), not just of the five shown
+});
+
+test('clicking a top agent or model filters the whole dashboard; clicking again or Clear filters resets it', async () => {
+  const other = { day: '2026-11-24', scope: 0, agentId: 'b1', agentName: 'Beta', model: 'gpt-4.1-mini-2025-04-14', deployment: 'gpt-4.1-mini', sku: '',
+    promptTokens: 300, completionTokens: 30, cachedTokens: 0, totalTokens: 330, calls: 1, errors: 0, durationMsSum: 400, costBasis: '' };
+  const p = dashboardPortal({ '/api/usage': report([other]) });
+  await p.context.runReport();
+  const totalCard = () => /1,980/.test(p.get('kpiCards').allText);
+  assert.ok(totalCard(), '1,650 + 330 across both agents');
+  const rowFor = (box, name) => p.get(box).options.find((r) => (r.allText || '').includes(name));
+
+  rowFor('topAgents', 'Beta').listeners.click();
+  assert.equal(p.run('dash.filters.agent'), 'Beta');
+  assert.match(p.get('kpiCards').allText, /330/);
+  assert.ok(!/1,980/.test(p.get('kpiCards').allText));
+  assert.match(p.get('activeFilters').textContent, /Agent = /);
+  assert.equal(p.get('btnClearFilters').disabled, false);
+  // the agent list keeps showing every agent so the selection can be switched; the model list narrows to that agent
+  assert.ok(rowFor('topAgents', 'Alpha'));
+  assert.ok(!(p.get('topModels').allText.includes('gpt-4o-mini')));
+
+  rowFor('topAgents', 'Beta').listeners.click(); // the selected entry toggles off
+  assert.equal(p.run('dash.filters.agent'), '');
+  assert.ok(totalCard());
+
+  rowFor('topModels', 'gpt-4.1-mini').listeners.click();
+  assert.equal(p.run('dash.filters.model'), 'gpt-4.1-mini-2025-04-14');
+  p.get('btnClearFilters').listeners.click();
+  assert.equal(p.run('JSON.stringify(Object.values(dash.filters).filter(Boolean))'), '[]');
+  assert.equal(p.get('btnClearFilters').disabled, true);
+  assert.ok(totalCard());
+});
+
+test('series can be hidden from the chart by clicking a token card, and shown again', async () => {
+  const p = dashboardPortal({ '/api/usage': report() });
+  await p.context.runReport();
+  const lines = () => (p.get('trendChart').innerHTML.match(/<polyline/g) || []).length;
+  assert.equal(lines(), 5);
+  p.get('kpiCards').options.find((c) => c.dataset.series === 'cached').listeners.click();
+  assert.equal(lines(), 4);
+  assert.ok(p.get('kpiCards').options.find((c) => c.dataset.series === 'cached').classList.contains('off'));
+  p.get('trendLegend').options.find((b) => b.allText.includes('Cached input')).listeners.click();
+  assert.equal(lines(), 5);
+});
+
+test('latency shows the model call and the whole agent run separately', async () => {
+  const withRuns = report();
+  withRuns.facts = withRuns.facts.map((f) => ({ ...f, runs: f.calls, runDurationMsSum: f.durationMsSum * 10 }));
+  const p = dashboardPortal({ '/api/usage': withRuns });
+  await p.context.runReport();
+  const ops = p.get('kpiOps').allText;
+  assert.match(ops, /Avg model latency/);
+  assert.match(ops, /533 ms/);    // 1600 ms over 3 model calls
+  assert.match(ops, /Avg agent run/);
+  assert.match(ops, /5,333 ms/);  // 16000 ms over 3 runs
 });
 
 function collectLinks(node, found = []) {

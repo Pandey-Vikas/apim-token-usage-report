@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Foundry Token Usage Report</title>
-<link rel="stylesheet" href="styles.css?v=6">
+<link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
 <div class="app" id="appRoot">
@@ -202,7 +202,10 @@
   <!-- Report dashboard -->
   <section class="panel hidden" id="viewer">
     <div class="viewer-head">
-      <h2>Foundry token usage</h2>
+      <div>
+        <h2>Foundry token usage</h2>
+        <div class="subtitle" id="reportSubtitle"></div>
+      </div>
       <button class="secondary" id="btnViewerBack">← Back</button>
     </div>
     <div id="viewerAppInfo" class="summary"></div>
@@ -230,88 +233,134 @@
       <div id="scopeList" class="checklist"></div>
     </details>
 
-    <label>Quick range <span class="muted">(UTC)</span></label>
-    <div class="chips" id="rangeChips">
-      <button type="button" class="chip" data-range="today">Today</button>
-      <button type="button" class="chip" data-range="yesterday">Yesterday</button>
-      <button type="button" class="chip" data-range="7">Last 7 days</button>
-      <button type="button" class="chip" data-range="30">Last 30 days</button>
-      <button type="button" class="chip" data-range="90">Last 90 days</button>
-      <button type="button" class="chip" data-range="thisMonth">This month</button>
-      <button type="button" class="chip" data-range="lastMonth">Last month</button>
-    </div>
-    <div class="grid2">
-      <div>
-        <label for="reportStartDate">Start date <span class="muted">(UTC)</span></label>
-        <input type="date" id="reportStartDate" onclick="try{this.showPicker()}catch(e){}">
+    <section class="block" aria-labelledby="rangeTitle">
+      <div class="block-title" id="rangeTitle">Date range</div>
+      <div class="range-row">
+        <div class="range-dates">
+          <div class="field">
+            <label for="reportStartDate">Start date <span class="muted">(UTC)</span></label>
+            <input type="date" id="reportStartDate" onclick="try{this.showPicker()}catch(e){}">
+          </div>
+          <div class="field">
+            <label for="reportEndDate">End date <span class="muted">(UTC, inclusive)</span></label>
+            <input type="date" id="reportEndDate" onclick="try{this.showPicker()}catch(e){}">
+          </div>
+        </div>
+        <div class="range-quick">
+          <label>Quick range <span class="muted">(UTC)</span></label>
+          <div class="chips" id="rangeChips">
+            <button type="button" class="chip" data-range="today">Today</button>
+            <button type="button" class="chip" data-range="yesterday">Yesterday</button>
+            <button type="button" class="chip" data-range="7">Last 7 days</button>
+            <button type="button" class="chip" data-range="30">Last 30 days</button>
+            <button type="button" class="chip" data-range="90">Last 90 days</button>
+            <button type="button" class="chip" data-range="thisMonth">This month</button>
+            <button type="button" class="chip" data-range="lastMonth">Last month</button>
+          </div>
+        </div>
       </div>
-      <div>
-        <label for="reportEndDate">End date <span class="muted">(UTC, inclusive)</span></label>
-        <input type="date" id="reportEndDate" onclick="try{this.showPicker()}catch(e){}">
-      </div>
-    </div>
-    <div id="rangeSummary" class="hint"></div>
+      <div id="rangeSummary" class="hint"></div>
 
-    <div class="footer" style="margin-top:16px">
-      <div>
+      <div class="run-row">
         <button id="btnRunReport" class="primary">Run report</button>
-        <button id="btnExportDetail" class="secondary" disabled>Download detail CSV</button>
-        <button id="btnExportGrouped" class="secondary" disabled>Download grouped CSV</button>
-      </div>
-      <label class="checkbox" style="margin:0"><input type="checkbox" id="liveMetrics"> Live (refresh 30 s after each run)</label>
-    </div>
-    <div id="liveStatus" class="status info" aria-live="polite"></div>
-    <div id="viewerStatus" class="status" aria-live="polite"></div>
-
-    <div id="dashBody" class="hidden">
-      <div id="kpiCards" class="kpis"></div>
-
-      <div class="two-col">
-        <div>
-          <h3 id="trendTitle">Tokens by day</h3>
-          <div id="trendChart" class="chart"></div>
-          <div class="legend"><span class="sw in"></span> Input <span class="sw out"></span> Output</div>
+        <div class="live">
+          <label class="checkbox live-toggle"><input type="checkbox" id="liveMetrics"> Live refresh every</label>
+          <input type="number" id="liveEvery" min="1" max="1440" step="1" value="5" aria-label="Live refresh interval">
+          <select id="liveUnit" aria-label="Live refresh unit">
+            <option value="60000">minutes</option>
+            <option value="3600000">hours</option>
+          </select>
         </div>
-        <div>
-          <h3>Top agents by tokens</h3>
-          <div id="topAgents" class="toplist"></div>
-        </div>
+        <span class="hint live-hint" id="liveHint">Each refresh re-scans Azure and queries every linked Application Insights, so a longer interval means less load.</span>
       </div>
+      <div id="liveStatus" class="status info" aria-live="polite"></div>
+      <div id="viewerStatus" class="status" aria-live="polite"></div>
+    </section>
 
+    <section class="block" aria-labelledby="filterTitle">
+      <div class="block-head">
+        <div class="block-title" id="filterTitle">Filters</div>
+        <button class="secondary small" id="btnClearFilters" type="button" disabled>Clear filters</button>
+      </div>
       <div class="filters">
-        <div><label for="fSubscription">Subscription</label><select id="fSubscription"></select></div>
-        <div><label for="fResourceGroup">Resource group</label><select id="fResourceGroup"></select></div>
-        <div><label for="fProject">Foundry project</label><select id="fProject"></select></div>
-        <div><label for="fAgent">Agent</label><select id="fAgent"></select></div>
-        <div><label for="fModel">Model</label><select id="fModel"></select></div>
+        <div class="field"><label for="fSubscription">Subscription</label><select id="fSubscription"></select></div>
+        <div class="field"><label for="fResourceGroup">Resource group</label><select id="fResourceGroup"></select></div>
+        <div class="field"><label for="fProject">Foundry project</label><select id="fProject"></select></div>
+        <div class="field"><label for="fAgent">Agent</label><select id="fAgent"></select></div>
+        <div class="field"><label for="fModel">Model</label><select id="fModel"></select></div>
       </div>
-      <div class="toolbar">
-        <label class="checkbox" style="margin:0"><input type="checkbox" id="hideIdle"> Hide agents with no usage</label>
-        <label class="checkbox" style="margin:0"><input type="checkbox" id="showPeriods"> Break down by period</label>
-        <button class="secondary" id="btnExpandAll" type="button">Expand all</button>
-        <button class="secondary" id="btnCollapseAll" type="button">Collapse all</button>
-      </div>
+      <div id="activeFilters" class="hint"></div>
+    </section>
+    <div id="dashBody" class="hidden">
+      <h3 class="section-h">Token breakdown <span class="muted">— click a card to show or hide its line on the chart</span></h3>
+      <div id="kpiCards" class="kpis kpis-tokens"></div>
+      <div id="kpiOps" class="kpis kpis-ops"></div>
 
-      <div class="treewrap">
-        <table class="csv tree-table">
-          <thead>
-            <tr>
-              <th>Tenant › Subscription › Resource group › Foundry project › Agent › Model</th>
-              <th class="num">Input</th><th class="num">Output</th><th class="num">Cached</th><th class="num">Total tokens</th>
-              <th class="num">Calls</th><th class="num">Est. cost</th><th class="num">Share</th><th class="num">Avg latency</th><th class="num">Errors</th><th>Last activity</th>
-            </tr>
-          </thead>
-          <tbody id="treeBody"></tbody>
-        </table>
+      <section class="card">
+        <div class="card-head">
+          <h3 id="trendTitle">Token consumption by day</h3>
+          <div id="trendLegend" class="legend-row"></div>
+        </div>
+        <div class="chart-wrap">
+          <div id="trendChart" class="chart"></div>
+          <div id="trendTip" class="tip hidden" role="status"></div>
+        </div>
+      </section>
+
+      <div class="two-col even">
+        <section class="card">
+          <div class="card-head"><h3>Top 5 agents <span class="muted">by total tokens</span></h3><div class="mini-legend"><span class="sw in"></span> Input <span class="sw out"></span> Output</div></div>
+          <div id="topAgents" class="toplist"></div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3>Top 5 models <span class="muted">by total tokens</span></h3><div class="mini-legend"><span class="sw in"></span> Input <span class="sw out"></span> Output</div></div>
+          <div id="topModels" class="toplist"></div>
+        </section>
       </div>
+      <p class="hint">Click an agent or model to filter the whole dashboard; click it again (or use Clear filters) to remove the filter.</p>
+
+      <section class="card">
+        <div class="card-head">
+          <h3>Detailed report <span class="muted">— Tenant › Subscription › Resource group › Foundry project › Agent › Model</span></h3>
+          <div class="btn-row">
+            <button class="secondary small" id="btnExportDetail" type="button" disabled>Download detail CSV</button>
+            <button class="secondary small" id="btnExportGrouped" type="button" disabled>Download grouped CSV</button>
+          </div>
+        </div>
+        <div class="toolbar">
+          <label class="checkbox"><input type="checkbox" id="hideIdle"> Hide agents with no usage</label>
+          <label class="checkbox"><input type="checkbox" id="showPeriods"> Break down by period</label>
+          <span class="toolbar-gap"></span>
+          <button class="secondary small" id="btnExpandAll" type="button">Expand all</button>
+          <button class="secondary small" id="btnCollapseAll" type="button">Collapse all</button>
+        </div>
+
+        <div class="treewrap">
+          <table class="csv tree-table" id="treeTable">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th class="num">Input</th><th class="num">Output</th><th class="num">Cached</th><th class="num" title="Input tokens that were not cached (input − cached)">Uncached</th>
+                <th class="num col-reasoning" title="Reasoning tokens, shown only when the telemetry reports them">Reasoning</th>
+                <th class="num">Total tokens</th><th class="num">Calls</th><th class="num" title="Average total tokens per model call">Tokens / call</th><th class="num">Est. cost</th><th class="num">Share</th>
+                <th class="num" title="Average duration of a single model (LLM) request. It does not include tool calls or waits between steps.">Avg model latency</th>
+                <th class="num" title="Average end-to-end time of an agent run (invoke_agent): all model calls, tool calls and waits.">Avg agent run</th>
+                <th class="num">Errors</th><th>Last activity</th>
+              </tr>
+            </thead>
+            <tbody id="treeBody"></tbody>
+          </table>
+        </div>
+      </section>
 
       <details class="advanced" id="periodBox" open>
         <summary>By period <span class="muted" id="periodHint"></span></summary>
-        <div class="treewrap"><table class="csv"><thead><tr><th>Period</th><th class="num">Total tokens</th><th class="num">Calls</th><th class="num">Est. cost</th><th class="num">Change vs previous</th></tr></thead><tbody id="periodBody"></tbody></table></div>
+        <div class="treewrap"><table class="csv"><thead><tr><th>Period</th><th class="num">Total tokens</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cached</th><th class="num">Calls</th><th class="num">Est. cost</th><th class="num">Change vs previous</th></tr></thead><tbody id="periodBody"></tbody></table></div>
       </details>
 
       <details class="advanced hidden" id="warningsBox"><summary id="warningsTitle">Warnings</summary><ul id="warningList"></ul></details>
       <p class="hint" id="priceNotes"></p>
+      <p class="hint">Latency: <b>Avg model latency</b> is the average time of one model (LLM) request. <b>Avg agent run</b> is the average end-to-end time of a whole agent run, including tool calls and waits, so it is usually longer.</p>
     </div>
   </section>
 
@@ -319,7 +368,7 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="wizard.js?v=1"></script>
-<script src="dashboard.js?v=1"></script>
+<script src="wizard.js?v=2"></script>
+<script src="dashboard.js?v=3"></script>
 </body>
 </html>

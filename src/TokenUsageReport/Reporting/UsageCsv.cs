@@ -9,8 +9,9 @@ public static class UsageCsv
     private static readonly string[] Headers =
     {
         "TenantId", "Tenant", "SubscriptionId", "Subscription", "ResourceGroup", "FoundryResource", "FoundryProject", "AppInsights",
-        "Agent", "AgentId", "Model", "Deployment", "PeriodStart", "PromptTokens", "CompletionTokens", "CachedTokens", "TotalTokens",
-        "Calls", "Errors", "AvgLatencyMs", "ReportedCost", "EstimatedCostUsd", "CostBasis", "FirstSeen", "LastSeen",
+        "Agent", "AgentId", "Model", "Deployment", "PeriodStart", "PromptTokens", "CompletionTokens", "CachedTokens", "UncachedPromptTokens",
+        "ReasoningTokens", "CacheWriteTokens", "TotalTokens", "CacheHitPercent", "AvgTokensPerCall",
+        "Calls", "Errors", "AvgModelCallLatencyMs", "AgentRuns", "AvgAgentRunLatencyMs", "ReportedCost", "EstimatedCostUsd", "CostBasis", "FirstSeen", "LastSeen",
         "ProjectPortalUrl", "AppInsightsPortalUrl",
     };
 
@@ -39,16 +40,27 @@ public static class UsageCsv
             var s = report.Scopes[g.Key.Scope];
             var calls = g.Sum(f => f.Calls);
             var duration = g.Sum(f => f.DurationMsSum);
+            var runs = g.Sum(f => f.Runs);
+            var runDuration = g.Sum(f => f.RunDurationMsSum);
+            var prompt = g.Sum(f => f.PromptTokens);
+            var cached = g.Sum(f => f.CachedTokens);
+            var total = g.Sum(f => f.TotalTokens);
             var bases = g.Select(f => f.CostBasis).Distinct().ToList();
             var fields = new[]
             {
                 Text(report.Tenant.Id), Text(report.Tenant.Name), Text(s.SubscriptionId), Text(s.SubscriptionName), Text(s.ResourceGroup),
                 Text(s.AccountName), Text(s.ProjectName), Text(s.AppInsightsName), Text(g.Key.AgentName), Text(g.Key.AgentId),
                 Text(g.Key.Model), Text(g.Key.Deployment), g.Key.Period,
-                g.Sum(f => f.PromptTokens).ToString(CultureInfo.InvariantCulture), g.Sum(f => f.CompletionTokens).ToString(CultureInfo.InvariantCulture),
-                g.Sum(f => f.CachedTokens).ToString(CultureInfo.InvariantCulture), g.Sum(f => f.TotalTokens).ToString(CultureInfo.InvariantCulture),
+                prompt.ToString(CultureInfo.InvariantCulture), g.Sum(f => f.CompletionTokens).ToString(CultureInfo.InvariantCulture),
+                cached.ToString(CultureInfo.InvariantCulture), Math.Max(0, prompt - cached).ToString(CultureInfo.InvariantCulture),
+                g.Sum(f => f.ReasoningTokens).ToString(CultureInfo.InvariantCulture), g.Sum(f => f.CacheWriteTokens).ToString(CultureInfo.InvariantCulture),
+                total.ToString(CultureInfo.InvariantCulture),
+                prompt == 0 ? "" : (100.0 * cached / prompt).ToString("0.#", CultureInfo.InvariantCulture),
+                calls == 0 ? "" : ((double)total / calls).ToString("0.#", CultureInfo.InvariantCulture),
                 calls.ToString(CultureInfo.InvariantCulture), g.Sum(f => f.Errors).ToString(CultureInfo.InvariantCulture),
                 calls == 0 || duration == 0 ? "" : (duration / calls).ToString("0.#", CultureInfo.InvariantCulture),
+                runs.ToString(CultureInfo.InvariantCulture),
+                runs == 0 || runDuration == 0 ? "" : (runDuration / runs).ToString("0.#", CultureInfo.InvariantCulture),
                 AllOrNothing(g.Select(f => f.ReportedCost)), AllOrNothing(g.Select(f => f.EstimatedCost)),
                 bases.Count == 1 ? bases[0] : "mixed",
                 g.Min(f => f.FirstSeen) ?? "", g.Max(f => f.LastSeen) ?? "", Text(s.PortalUrl), Text(s.AppInsightsPortalUrl),

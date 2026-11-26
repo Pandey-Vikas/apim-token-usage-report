@@ -39,17 +39,24 @@ function periodsBetween(startDay, endDay, grain) {
 const costOf = (r) => (r.reported ?? r.estimated ?? null);
 
 function newTotals() {
-  return { prompt: 0, completion: 0, cached: 0, total: 0, calls: 0, errors: 0, durationMs: 0, cost: 0, priced: 0, unpriced: 0, lastSeen: '' };
+  return {
+    prompt: 0, completion: 0, cached: 0, reasoning: 0, cacheWrite: 0, total: 0, calls: 0, errors: 0, durationMs: 0, runs: 0, runMs: 0,
+    cost: 0, priced: 0, unpriced: 0, lastSeen: '',
+  };
 }
 
 function addTo(t, r) {
   t.prompt += r.prompt || 0;
   t.completion += r.completion || 0;
   t.cached += r.cached || 0;
+  t.reasoning += r.reasoning || 0;
+  t.cacheWrite += r.cacheWrite || 0;
   t.total += r.total || 0;
   t.calls += r.calls || 0;
   t.errors += r.errors || 0;
   t.durationMs += r.durationMs || 0;
+  t.runs += r.runs || 0;
+  t.runMs += r.runMs || 0;
   if (r.kind === 'usage') {
     const c = costOf(r);
     if (c === null || c === undefined) { if ((r.total || 0) > 0) t.unpriced++; } else { t.cost += c; t.priced++; }
@@ -69,6 +76,9 @@ function portalUrlFor(id) {
 
 const sameText = (a, b) => (a || '').toLowerCase() === (b || '').toLowerCase();
 
+// Input tokens that were not served from the prompt cache.
+const uncachedOf = (t) => Math.max(0, (t.prompt || 0) - (t.cached || 0));
+
 // One record per (day, project, agent, model) of real usage, plus zero-usage records for every discovered project and
 // agent so idle agents and unlinked projects stay visible in the hierarchy.
 function flatten(report) {
@@ -76,7 +86,7 @@ function flatten(report) {
   const scopes = report.scopes || [];
   const tenantName = tenant.name || tenant.id || '';
   const records = [];
-  const zero = { prompt: 0, completion: 0, cached: 0, total: 0, calls: 0, errors: 0, durationMs: 0, reported: null, estimated: null };
+  const zero = { prompt: 0, completion: 0, cached: 0, reasoning: 0, cacheWrite: 0, total: 0, calls: 0, errors: 0, durationMs: 0, runs: 0, runMs: 0, reported: null, estimated: null };
   for (const f of report.facts || []) {
     const s = scopes[f.scope] || {};
     records.push({
@@ -86,6 +96,7 @@ function flatten(report) {
       appInsights: s.appInsightsName || '', portalUrl: s.portalUrl || '', appInsightsPortalUrl: s.appInsightsPortalUrl || '',
       agent: f.agentName || f.agentId || '', agentId: f.agentId || '', model: f.model || '', deployment: f.deployment || '', sku: f.sku || '',
       prompt: f.promptTokens, completion: f.completionTokens, cached: f.cachedTokens, total: f.totalTokens, calls: f.calls,
+      reasoning: f.reasoningTokens || 0, cacheWrite: f.cacheWriteTokens || 0, runs: f.runs || 0, runMs: f.runDurationMsSum || 0,
       errors: f.errors, durationMs: f.durationMsSum, reported: f.reportedCost ?? null, estimated: f.estimatedCost ?? null,
       costBasis: f.costBasis || '', firstSeen: f.firstSeen || '', lastSeen: f.lastSeen || '',
     });
@@ -190,8 +201,13 @@ function buildTree(records, opts = {}) {
 }
 
 const CSV_HEADERS = ['TenantId', 'Tenant', 'SubscriptionId', 'Subscription', 'ResourceGroup', 'FoundryResource', 'FoundryProject', 'AppInsights',
-  'Agent', 'AgentId', 'Model', 'Deployment', 'PeriodStart', 'PromptTokens', 'CompletionTokens', 'CachedTokens', 'TotalTokens', 'Calls', 'Errors',
-  'AvgLatencyMs', 'ReportedCost', 'EstimatedCostUsd', 'CostBasis', 'FirstSeen', 'LastSeen', 'ProjectPortalUrl', 'AppInsightsPortalUrl'];
+  'Agent', 'AgentId', 'Model', 'Deployment', 'PeriodStart', 'PromptTokens', 'CompletionTokens', 'CachedTokens', 'UncachedPromptTokens',
+  'ReasoningTokens', 'CacheWriteTokens', 'TotalTokens', 'CacheHitPercent', 'AvgTokensPerCall', 'Calls', 'Errors', 'AvgModelCallLatencyMs',
+  'AgentRuns', 'AvgAgentRunLatencyMs', 'ReportedCost', 'EstimatedCostUsd', 'CostBasis', 'FirstSeen', 'LastSeen', 'ProjectPortalUrl', 'AppInsightsPortalUrl'];
+
+const ratio1 = (num, den) => (den ? Number((num / den).toFixed(1)) : '');
+const avgModelMs = (t) => (t.calls && t.durationMs ? ratio1(t.durationMs, t.calls) : '');
+const avgRunMs = (t) => (t.runs && t.runMs ? ratio1(t.runMs, t.runs) : '');
 
 // Quotes a value and defuses spreadsheet formulas: agent and model names come from telemetry.
 function csvCell(value) {
@@ -225,7 +241,8 @@ function detailCsv(records, grain) {
     const bases = [...new Set(g.rows.map((x) => x.costBasis))];
     lines.push([
       r.tenantId, r.tenant, r.subscriptionId, r.subscription, r.resourceGroup, r.account, r.project, r.appInsights, r.agent, r.agentId, r.model, r.deployment,
-      g.period, t.prompt, t.completion, t.cached, t.total, t.calls, t.errors, t.calls && t.durationMs ? Number((t.durationMs / t.calls).toFixed(1)) : '',
+      g.period, t.prompt, t.completion, t.cached, uncachedOf(t), t.reasoning, t.cacheWrite, t.total, t.prompt ? Number(((t.cached / t.prompt) * 100).toFixed(1)) : '',
+      ratio1(t.total, t.calls), t.calls, t.errors, avgModelMs(t), t.runs, avgRunMs(t),
       allReported ? String(Number(g.rows.reduce((s, x) => s + x.reported, 0).toFixed(6))) : '',
       g.rows.every((x) => x.estimated !== null && x.estimated !== undefined) ? String(Number(g.rows.reduce((s, x) => s + x.estimated, 0).toFixed(6))) : '',
       bases.length === 1 ? bases[0] : 'mixed', g.first, t.lastSeen, r.portalUrl, r.appInsightsPortalUrl,
@@ -237,7 +254,8 @@ function detailCsv(records, grain) {
 // The visible hierarchy as rows (every level, fully expanded) with the path in separate columns.
 function groupedCsv(root, grandTotal) {
   const header = ['Level', 'Name', 'Tenant', 'Subscription', 'ResourceGroup', 'FoundryProject', 'Agent', 'Model', 'Period', 'InputTokens', 'OutputTokens',
-    'CachedTokens', 'TotalTokens', 'Calls', 'Errors', 'AvgLatencyMs', 'EstimatedCostUsd', 'SharePercent', 'LastActivity'];
+    'CachedTokens', 'UncachedInputTokens', 'ReasoningTokens', 'TotalTokens', 'Calls', 'AvgTokensPerCall', 'Errors', 'AvgModelCallLatencyMs', 'AgentRuns',
+    'AvgAgentRunLatencyMs', 'EstimatedCostUsd', 'SharePercent', 'LastActivity'];
   const lines = [header.join(',')];
   const walk = (n, ctx) => {
     const next = { ...ctx };
@@ -251,7 +269,7 @@ function groupedCsv(root, grandTotal) {
     const t = n.totals;
     lines.push([
       n.level, n.label, next.Tenant, next.Subscription, next.ResourceGroup, next.FoundryProject, next.Agent, next.Model, next.Period,
-      t.prompt, t.completion, t.cached, t.total, t.calls, t.errors, t.calls && t.durationMs ? Number((t.durationMs / t.calls).toFixed(1)) : '',
+      t.prompt, t.completion, t.cached, uncachedOf(t), t.reasoning, t.total, t.calls, ratio1(t.total, t.calls), t.errors, avgModelMs(t), t.runs, avgRunMs(t),
       costForCsv(t), grandTotal ? Number(((t.total / grandTotal) * 100).toFixed(2)) : '', t.lastSeen,
     ].map(csvCell).join(','));
     n.children.forEach((c) => walk(c, next));
@@ -261,9 +279,77 @@ function groupedCsv(root, grandTotal) {
 }
 
 // ============================================================================
+// Chart and ranking helpers (pure)
+// ============================================================================
+// Token measures that can be compared on the line chart; the first four are always reported by Foundry telemetry.
+// Reasoning and cache-write tokens appear only when the telemetry carries them.
+const SERIES = [
+  { id: 'total', label: 'Total tokens', color: '#118DFF', value: (t) => t.total, hint: 'Input + output tokens' },
+  { id: 'prompt', label: 'Input (prompt)', color: '#12239E', value: (t) => t.prompt, hint: 'Tokens sent to the model' },
+  { id: 'completion', label: 'Output (completion)', color: '#E66C37', value: (t) => t.completion, hint: 'Tokens generated by the model' },
+  { id: 'cached', label: 'Cached input', color: '#6B007B', value: (t) => t.cached, hint: 'Input tokens served from the prompt cache' },
+  { id: 'uncached', label: 'Uncached input', color: '#E044A7', value: uncachedOf, hint: 'Input tokens that were not cached (input − cached)' },
+  { id: 'reasoning', label: 'Reasoning', color: '#D9B300', value: (t) => t.reasoning, optional: true, hint: 'Reasoning tokens (a subset of output), when the telemetry reports them' },
+  { id: 'cacheWrite', label: 'Cache write', color: '#744EC2', value: (t) => t.cacheWrite, optional: true, hint: 'Input tokens written to the prompt cache, when reported' },
+];
+
+// Series that have data for these totals (optional ones only when non-zero).
+function availableSeries(totals) {
+  return SERIES.filter((s) => !s.optional || s.value(totals) > 0);
+}
+
+// One bucket per period in [startDay, endDay] (empty periods are zeros) with every series' value and the call/cost totals.
+function trendSeries(records, grain, startDay, endDay) {
+  const buckets = new Map(periodsBetween(startDay, endDay, grain).map((p) => [p, newTotals()]));
+  records.filter((r) => r.kind === 'usage').forEach((r) => {
+    const b = buckets.get(periodStart(r.day, grain));
+    if (b) addTo(b, r);
+  });
+  const periods = [...buckets.keys()];
+  const totals = periods.map((p) => buckets.get(p));
+  const values = {};
+  SERIES.forEach((s) => { values[s.id] = totals.map((t) => s.value(t)); });
+  return { periods, totals, values };
+}
+
+// A round axis maximum (1, 2, 2.5, 5 × 10^n) at or above the data maximum, so gridlines land on tidy numbers.
+function niceMax(max) {
+  if (!(max > 0)) return 1;
+  const pow = 10 ** Math.floor(Math.log10(max));
+  const f = max / pow;
+  const step = f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10;
+  return step * pow;
+}
+
+// Largest consumers by total tokens for one dimension; rows without a name are kept but flagged so they cannot be used as a filter.
+function topN(records, keyFn, n = 5) {
+  const groups = new Map();
+  records.filter((r) => r.kind === 'usage' && r.total > 0).forEach((r) => {
+    const key = keyFn(r) || '';
+    let g = groups.get(key);
+    if (!g) { g = { name: key, totals: newTotals() }; groups.set(key, g); }
+    addTo(g.totals, r);
+  });
+  const grand = [...groups.values()].reduce((s, g) => s + g.totals.total, 0);
+  return [...groups.values()]
+    .sort((a, b) => (b.totals.total - a.totals.total) || a.name.localeCompare(b.name))
+    .slice(0, n)
+    .map((g) => ({ name: g.name, totals: g.totals, share: grand ? g.totals.total / grand : 0 }));
+}
+
+// ============================================================================
 // Formatting
 // ============================================================================
 const fmtInt = (n) => Math.round(n || 0).toLocaleString('en-US');
+
+// 1,234 → 1.2K, 2,500,000 → 2.5M (axis labels).
+function fmtCompact(n) {
+  const a = Math.abs(n);
+  if (a >= 1e9) return `${+(n / 1e9).toFixed(2)}B`;
+  if (a >= 1e6) return `${+(n / 1e6).toFixed(2)}M`;
+  if (a >= 1e3) return `${+(n / 1e3).toFixed(1)}K`;
+  return String(Math.round(n));
+}
 
 function fmtCost(t) {
   if (t.priced === 0) return t.unpriced > 0 ? 'n/a' : '—';
@@ -273,14 +359,22 @@ function fmtCost(t) {
 }
 
 const fmtPct = (x) => (Number.isFinite(x) ? `${(x * 100).toFixed(x >= 0.1 || x === 0 ? 1 : 2)}%` : '—');
-const fmtLatency = (t) => (t.calls && t.durationMs ? `${Math.round(t.durationMs / t.calls).toLocaleString('en-US')} ms` : '—');
+// Durations: milliseconds under 10 s, seconds above, so a 13,893 ms agent run reads "13.9 s".
+function fmtMs(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '—';
+  return ms >= 10000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms).toLocaleString('en-US')} ms`;
+}
+// Average of one model (LLM) request.
+const fmtLatency = (t) => (t.calls && t.durationMs ? fmtMs(t.durationMs / t.calls) : '—');
+// Average of a whole agent run (invoke_agent), including tool calls and waiting.
+const fmtRunLatency = (t) => (t.runs && t.runMs ? fmtMs(t.runMs / t.runs) : '—');
 const fmtLast = (s) => (s ? s.replace('T', ' ').slice(0, 16) : '—');
 
 // ============================================================================
 // Dashboard state and rendering
 // ============================================================================
 const dash = {
-  report: null, records: [], grain: 'day', expanded: new Set(), scope: new Set(), allSubs: [],
+  report: null, records: [], grain: 'day', expanded: new Set(), scope: new Set(), allSubs: [], hidden: new Set(), trend: null,
   tenantId: '', tenantName: '', account: '', filters: { subscriptionId: '', resourceGroup: '', projectId: '', agent: '', model: '', hideIdle: false }, byPeriod: false,
 };
 let liveTimer = null;
@@ -360,14 +454,25 @@ function refreshFilters() {
 
 const FILTER_FIELDS = { fSubscription: 'subscriptionId', fResourceGroup: 'resourceGroup', fProject: 'projectId', fAgent: 'agent', fModel: 'model' };
 Object.entries(FILTER_FIELDS).forEach(([id, field]) => $(id).addEventListener('change', () => { dash.filters[field] = $(id).value; renderAll(false); }));
+$('btnClearFilters').addEventListener('click', clearFilters);
 $('hideIdle').addEventListener('change', () => { dash.filters.hideIdle = $('hideIdle').checked; renderAll(false); });
 $('showPeriods').addEventListener('change', () => { dash.byPeriod = $('showPeriods').checked; renderAll(false); });
 
-function kpi(label, value, sub) {
-  const c = el('div', 'kpi');
-  c.appendChild(el('div', 'kpi-v', value));
+function kpi(label, value, sub, opts = {}) {
+  const c = el(opts.series ? 'button' : 'div', `kpi${opts.series ? ' kpi-series' : ''}`);
+  if (opts.series) {
+    c.type = 'button';
+    c.dataset.series = opts.series.id;
+    c.style.setProperty('--series', opts.series.color);
+    const off = dash.hidden.has(opts.series.id);
+    c.classList.toggle('off', off);
+    c.setAttribute('aria-pressed', String(!off));
+    c.title = `${opts.series.hint}. Click to ${off ? 'show' : 'hide'} this line on the chart.`;
+    c.addEventListener('click', () => toggleSeries(opts.series.id));
+  } else if (opts.title) c.title = opts.title;
   c.appendChild(el('div', 'kpi-k', label));
-  if (sub) c.appendChild(el('div', 'kpi-s', sub));
+  c.appendChild(el('div', 'kpi-v', value));
+  c.appendChild(el('div', 'kpi-s', sub || ' '));
   return c;
 }
 
@@ -375,79 +480,230 @@ function renderKpis(records, t) {
   const usage = records.filter((r) => r.kind === 'usage' && r.total > 0);
   const active = new Set(usage.map((r) => r.agent || '(unattributed)')).size;
   const known = new Set(records.filter((r) => r.agent || r.kind === 'usage').map((r) => r.agent || '(unattributed)')).size;
-  const box = $('kpiCards');
-  box.innerHTML = '';
+
+  const tokenBox = $('kpiCards');
+  tokenBox.innerHTML = '';
+  const sub = {
+    total: `${fmtInt(t.calls)} model call${t.calls === 1 ? '' : 's'}`,
+    prompt: t.total ? `${fmtPct(t.prompt / t.total)} of total` : ' ',
+    completion: t.total ? `${fmtPct(t.completion / t.total)} of total` : ' ',
+    cached: t.prompt ? `${fmtPct(t.cached / t.prompt)} of input` : ' ',
+    uncached: t.prompt ? `${fmtPct(uncachedOf(t) / t.prompt)} of input` : ' ',
+    reasoning: t.completion ? `${fmtPct(t.reasoning / t.completion)} of output` : ' ',
+    cacheWrite: t.prompt ? `${fmtPct(t.cacheWrite / t.prompt)} of input` : ' ',
+  };
+  const cards = availableSeries(t);
+  tokenBox.style.setProperty('--n', String(cards.length));
+  cards.forEach((s) => tokenBox.appendChild(kpi(s.label, fmtInt(s.value(t)), sub[s.id], { series: s })));
+
+  const peak = peakPeriod(usage, dash.grain);
+  const opsBox = $('kpiOps');
+  opsBox.innerHTML = '';
   [
-    kpi('Total tokens', fmtInt(t.total)),
-    kpi('Input tokens', fmtInt(t.prompt)),
-    kpi('Output tokens', fmtInt(t.completion)),
-    kpi('Cached input', t.prompt ? fmtPct(t.cached / t.prompt) : '—', `${fmtInt(t.cached)} tokens`),
-    kpi('Model calls', fmtInt(t.calls)),
+    kpi('Model calls', fmtInt(t.calls), 'LLM requests', { title: 'Number of model (LLM) requests' }),
+    kpi('Agent runs', fmtInt(t.runs), 'end-to-end invocations', { title: 'Agent invocations (invoke_agent spans). One run can make several model calls.' }),
+    kpi('Tokens per call', t.calls ? fmtInt(t.total / t.calls) : '—', t.calls ? `${fmtInt(t.prompt / t.calls)} in · ${fmtInt(t.completion / t.calls)} out` : ' ', { title: 'Average total tokens per model call' }),
+    kpi('Cache hit rate', t.prompt ? fmtPct(t.cached / t.prompt) : '—', `${fmtInt(t.cached)} cached tokens`, { title: 'Share of input tokens served from the prompt cache' }),
     kpi('Est. cost (USD)', fmtCost(t), t.unpriced > 0 ? `${t.unpriced} row(s) unpriced` : 'list price or reported'),
     kpi('Agents', `${active} / ${known}`, 'active / known'),
     kpi('Error rate', t.calls ? fmtPct(t.errors / t.calls) : '—', `${fmtInt(t.errors)} failed`),
-    kpi('Avg latency', fmtLatency(t)),
-  ].forEach((c) => box.appendChild(c));
+    kpi('Avg model latency', fmtLatency(t), 'per model (LLM) call', { title: 'Average duration of a single model request. It does not include tool calls or waiting between steps; see Avg agent run for the full journey.' }),
+    kpi('Avg agent run', fmtRunLatency(t), 'whole agent journey', { title: 'Average end-to-end time of an agent run (the invoke_agent span): all model calls, tool calls and waits.' }),
+    kpi(`Peak ${dash.grain}`, peak ? periodLabel(peak.start, dash.grain) : '—', peak ? `${fmtInt(peak.total)} tokens` : ' ', { title: `The ${dash.grain} with the most tokens in this window` }),
+  ].forEach((c) => opsBox.appendChild(c));
 }
 
-function renderTrend(records) {
-  const grain = dash.grain;
-  const usage = records.filter((r) => r.kind === 'usage');
-  const days = usage.map((r) => r.day).sort();
+// The period (day, week or month) with the most tokens.
+function peakPeriod(usageRecords, grain) {
+  const sums = new Map();
+  usageRecords.forEach((r) => { const k = periodStart(r.day, grain); sums.set(k, (sums.get(k) || 0) + r.total); });
+  let best = null;
+  sums.forEach((total, start) => { if (total > 0 && (!best || total > best.total || (total === best.total && start > best.start))) best = { start, total }; });
+  return best;
+}
+
+function toggleSeries(id) {
+  if (dash.hidden.has(id)) dash.hidden.delete(id); else dash.hidden.add(id);
+  if (dash.report) renderAll(false);
+}
+
+const SVG_NS_ESC = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+function chartRange(records) {
+  const days = records.filter((r) => r.kind === 'usage').map((r) => r.day).sort();
   const start = dash.report?.windowStartUtc ? String(dash.report.windowStartUtc).slice(0, 10) : days[0];
   const end = dash.report?.windowEndUtc ? String(dash.report.windowEndUtc).slice(0, 10) : days[days.length - 1];
-  $('trendTitle').textContent = `Tokens by ${grain}`;
+  return [start, end];
+}
+
+// Multi-series line chart drawn as inline SVG (no library): one coloured line per token measure, a shared axis, gridlines and
+// a hover read-out of every visible series for the nearest period.
+function renderTrend(records, totals) {
+  const grain = dash.grain;
+  const [start, end] = chartRange(records);
+  $('trendTitle').textContent = `Token consumption by ${grain}`;
   const chart = $('trendChart');
+  const legend = $('trendLegend');
+  legend.innerHTML = '';
   chart.innerHTML = '';
-  if (!start || !end) { chart.appendChild(el('div', 'hint', 'No usage in this window.')); return; }
-  const buckets = new Map(periodsBetween(start, end, grain).map((p) => [p, { in: 0, out: 0, calls: 0, cost: newTotals() }]));
-  usage.forEach((r) => {
-    const b = buckets.get(periodStart(r.day, grain));
-    if (!b) return;
-    b.in += r.prompt; b.out += r.completion; b.calls += r.calls; addTo(b.cost, r);
+  dash.trend = null;
+  if (!start || !end) { chart.appendChild(el('div', 'hint pad', 'No usage in this window.')); return; }
+
+  const data = trendSeries(records, grain, start, end);
+  const avail = availableSeries(totals);
+  avail.forEach((s) => {
+    const b = el('button', `legend-item${dash.hidden.has(s.id) ? ' off' : ''}`);
+    b.type = 'button';
+    b.style.setProperty('--series', s.color);
+    b.setAttribute('aria-pressed', String(!dash.hidden.has(s.id)));
+    b.title = `${s.hint}. Click to ${dash.hidden.has(s.id) ? 'show' : 'hide'}.`;
+    b.appendChild(el('span', 'sw', ''));
+    b.appendChild(el('span', '', s.label));
+    b.addEventListener('click', () => toggleSeries(s.id));
+    legend.appendChild(b);
   });
-  const max = Math.max(1, ...[...buckets.values()].map((b) => b.in + b.out));
-  const labelEvery = Math.ceil(buckets.size / 12);
-  let i = 0;
-  buckets.forEach((b, key) => {
-    const col = el('div', 'bar-col');
-    col.title = `${periodLabel(key, grain)}: ${fmtInt(b.in + b.out)} tokens (${fmtInt(b.in)} in, ${fmtInt(b.out)} out), ${fmtInt(b.calls)} calls, ${fmtCost(b.cost)}`;
-    const stack = el('div', 'bar-stack');
-    const out = el('div', 'bar out');
-    out.style.height = `${(b.out / max) * 100}%`;
-    const inp = el('div', 'bar in');
-    inp.style.height = `${(b.in / max) * 100}%`;
-    stack.appendChild(out);
-    stack.appendChild(inp);
-    col.appendChild(stack);
-    col.appendChild(el('div', 'bar-label', i % labelEvery === 0 ? periodLabel(key, grain) : ''));
-    chart.appendChild(col);
-    i++;
+  const shown = avail.filter((s) => !dash.hidden.has(s.id));
+  if (shown.length === 0) { chart.appendChild(el('div', 'hint pad', 'All lines are hidden. Pick a token measure above to show it.')); return; }
+
+  const W = Math.max(520, chart.clientWidth || 900);
+  const H = 300;
+  const m = { l: 58, r: 20, t: 16, b: 36 };
+  const pw = W - m.l - m.r;
+  const ph = H - m.t - m.b;
+  const n = data.periods.length;
+  const yMax = niceMax(Math.max(1, ...shown.flatMap((s) => data.values[s.id])));
+  const x = (i) => m.l + (n === 1 ? pw / 2 : (i / (n - 1)) * pw);
+  const y = (v) => m.t + ph - (v / yMax) * ph;
+
+  let svg = `<svg class="linechart" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="Token consumption by ${grain}">`;
+  for (let g = 0; g <= 5; g++) {
+    const v = (yMax / 5) * g;
+    svg += `<line class="grid" x1="${m.l}" x2="${W - m.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>`;
+    svg += `<text class="ylab" x="${m.l - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${fmtCompact(v)}</text>`;
+  }
+  const every = Math.ceil(n / Math.max(2, Math.floor(pw / 90)));
+  data.periods.forEach((p, i) => {
+    if (i % every === 0) svg += `<text class="xlab" x="${x(i).toFixed(1)}" y="${H - 12}" text-anchor="middle">${SVG_NS_ESC(periodLabel(p, grain))}</text>`;
+  });
+  shown.forEach((s) => {
+    const pts = data.values[s.id].map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    if (n > 1) svg += `<polyline class="line" fill="none" stroke="${s.color}" stroke-width="2.25" stroke-linejoin="round" stroke-linecap="round" points="${pts.join(' ')}"/>`;
+    data.values[s.id].forEach((v, i) => { svg += `<circle class="dot" cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}" r="${n === 1 ? 5 : 3.2}" fill="${s.color}"/>`; });
+  });
+  svg += `<line class="guide hidden" id="trendGuide" y1="${m.t}" y2="${m.t + ph}" x1="0" x2="0"/></svg>`;
+  chart.innerHTML = svg;
+  dash.trend = { data, shown, grain, geometry: { W, m, pw, n } };
+}
+
+function showTrendTip(clientX, rect) {
+  const t = dash.trend;
+  const tip = $('trendTip');
+  if (!t) { tip.classList.add('hidden'); return; }
+  const { W, m, pw, n } = t.geometry;
+  const px = ((clientX - rect.left) / rect.width) * W;
+  const i = n === 1 ? 0 : Math.min(n - 1, Math.max(0, Math.round(((px - m.l) / pw) * (n - 1))));
+  const cx = m.l + (n === 1 ? pw / 2 : (i / (n - 1)) * pw);
+  const guide = document.getElementById('trendGuide');
+  if (guide) { guide.setAttribute('x1', cx.toFixed(1)); guide.setAttribute('x2', cx.toFixed(1)); guide.classList.remove('hidden'); }
+  const tot = t.data.totals[i];
+  tip.innerHTML = '';
+  tip.appendChild(el('div', 'tip-h', periodLabel(t.data.periods[i], t.grain)));
+  t.shown.forEach((s) => {
+    const row = el('div', 'tip-r');
+    const sw = el('span', 'sw', '');
+    sw.style.background = s.color;
+    row.appendChild(sw);
+    row.appendChild(el('span', 'tip-k', s.label));
+    row.appendChild(el('span', 'tip-v', fmtInt(t.data.values[s.id][i])));
+    tip.appendChild(row);
+  });
+  tip.appendChild(el('div', 'tip-f', `${fmtInt(tot.calls)} call(s) · ${fmtCost(tot)}`));
+  tip.classList.remove('hidden');
+  const left = (cx / W) * rect.width;
+  tip.style.left = `${left > rect.width * 0.62 ? left - tip.offsetWidth - 14 : left + 14}px`;
+}
+
+$('trendChart').addEventListener('mousemove', (e) => showTrendTip(e.clientX, $('trendChart').getBoundingClientRect()));
+$('trendChart').addEventListener('mouseleave', () => {
+  $('trendTip').classList.add('hidden');
+  document.getElementById('trendGuide')?.classList.add('hidden');
+});
+let resizeTimer = null;
+window.addEventListener?.('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (dash.report && !$('viewer').classList.contains('hidden')) renderAll(false); }, 150);
+});
+
+// Top 5 consumers of one dimension. The list ignores that dimension's own filter, so the other entries stay visible and
+// clicking one swaps the selection; clicking the selected entry clears it.
+function renderTop(boxId, field, keyFn, records) {
+  const box = $(boxId);
+  box.innerHTML = '';
+  const top = topN(applyFilters(records, { ...dash.filters, [field]: '' }), keyFn, 5);
+  if (top.length === 0) { box.appendChild(el('div', 'hint', 'No usage in this window.')); return; }
+  const max = top[0].totals.total || 1;
+  const selected = dash.filters[field];
+  top.forEach((e, i) => {
+    const selectable = !!e.name;
+    const row = el(selectable ? 'button' : 'div', `top-row${selected && e.name === selected ? ' selected' : ''}${selected && e.name !== selected ? ' dim' : ''}`);
+    if (selectable) {
+      row.type = 'button';
+      row.title = e.name === selected ? 'Click to remove this filter' : `Click to filter the dashboard to ${e.name}`;
+      row.addEventListener('click', () => setFilter(field, e.name === dash.filters[field] ? '' : e.name));
+    } else row.title = 'Usage without a name cannot be used as a filter';
+    row.appendChild(el('div', 'top-rank', String(i + 1)));
+    row.appendChild(el('div', 'top-name', e.name || '(unattributed)'));
+    const bar = el('div', 'top-bar');
+    const widthPct = (e.totals.total / max) * 100;
+    const inp = el('div', 'top-fill in');
+    inp.style.width = `${e.totals.total ? (e.totals.prompt / e.totals.total) * widthPct : 0}%`;
+    const out = el('div', 'top-fill out');
+    out.style.width = `${e.totals.total ? (e.totals.completion / e.totals.total) * widthPct : 0}%`;
+    bar.appendChild(inp);
+    bar.appendChild(out);
+    row.appendChild(bar);
+    row.appendChild(el('div', 'top-val', fmtInt(e.totals.total)));
+    row.appendChild(el('div', 'top-share', fmtPct(e.share)));
+    box.appendChild(row);
   });
 }
 
-function renderTopAgents(records) {
-  const byAgent = new Map();
-  records.filter((r) => r.kind === 'usage').forEach((r) => {
-    const k = r.agent || '(unattributed)';
-    byAgent.set(k, (byAgent.get(k) || 0) + r.total);
-  });
-  const top = [...byAgent.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const box = $('topAgents');
-  box.innerHTML = '';
-  if (top.length === 0) { box.appendChild(el('div', 'hint', 'No usage in this window.')); return; }
-  const max = top[0][1] || 1;
-  top.forEach(([name, total]) => {
-    const row = el('div', 'top-row');
-    row.appendChild(el('div', 'top-name', name));
-    const bar = el('div', 'top-bar');
-    const fill = el('div', 'top-fill');
-    fill.style.width = `${(total / max) * 100}%`;
-    bar.appendChild(fill);
-    row.appendChild(bar);
-    row.appendChild(el('div', 'top-val', fmtInt(total)));
-    box.appendChild(row);
-  });
+function renderTops(records) {
+  renderTop('topAgents', 'agent', (r) => r.agent, records);
+  renderTop('topModels', 'model', (r) => r.model, records);
+}
+
+const FILTER_LABELS = { subscriptionId: 'Subscription', resourceGroup: 'Resource group', projectId: 'Foundry project', agent: 'Agent', model: 'Model' };
+const FILTER_CONTROLS = { subscriptionId: 'fSubscription', resourceGroup: 'fResourceGroup', projectId: 'fProject', agent: 'fAgent', model: 'fModel' };
+
+function setFilter(field, value) {
+  dash.filters[field] = value;
+  const sel = $(FILTER_CONTROLS[field]);
+  if (sel) sel.value = value;
+  renderAll(false);
+}
+
+function activeFilterCount() {
+  return Object.keys(FILTER_LABELS).filter((k) => dash.filters[k]).length;
+}
+
+function renderFilterState() {
+  const n = activeFilterCount();
+  $('btnClearFilters').disabled = n === 0;
+  $('activeFilters').textContent = n
+    ? `Showing only: ${Object.keys(FILTER_LABELS).filter((k) => dash.filters[k]).map((k) => `${FILTER_LABELS[k]} = ${filterText(k)}`).join(' · ')}`
+    : 'Showing everything in the selected scope and date range.';
+}
+
+function filterText(field) {
+  const sel = $(FILTER_CONTROLS[field]);
+  const opt = sel?.selectedOptions?.[0];
+  return (opt && opt.textContent) || dash.filters[field];
+}
+
+function clearFilters() {
+  Object.keys(FILTER_LABELS).forEach((k) => { dash.filters[k] = ''; const sel = $(FILTER_CONTROLS[k]); if (sel) sel.value = ''; });
+  if (dash.report) renderAll(false); else renderFilterState();
 }
 
 function renderPeriodTable(records) {
@@ -469,12 +725,15 @@ function renderPeriodTable(records) {
     const cell = (text, cls) => { const td = el('td', cls, text); tr.appendChild(td); };
     cell(periodLabel(k, grain));
     cell(fmtInt(t.total), 'num');
+    cell(fmtInt(t.prompt), 'num');
+    cell(fmtInt(t.completion), 'num');
+    cell(fmtInt(t.cached), 'num');
     cell(fmtInt(t.calls), 'num');
     cell(fmtCost(t), 'num');
     cell(prev && prev.total > 0 ? `${t.total >= prev.total ? '+' : ''}${(((t.total - prev.total) / prev.total) * 100).toFixed(1)}%` : '—', 'num');
     body.appendChild(tr);
   });
-  if (keys.length === 0) { const tr = el('tr'); const td = el('td', '', 'No usage in this window.'); td.colSpan = 5; tr.appendChild(td); body.appendChild(tr); }
+  if (keys.length === 0) { const tr = el('tr'); const td = el('td', '', 'No usage in this window.'); td.colSpan = 8; tr.appendChild(td); body.appendChild(tr); }
 }
 
 function defaultExpanded(root) {
@@ -515,7 +774,8 @@ function renderTree(root) {
     tr.appendChild(first);
     const t = node.totals;
     const num = (text, cls = 'num') => tr.appendChild(el('td', cls, text));
-    num(fmtInt(t.prompt)); num(fmtInt(t.completion)); num(fmtInt(t.cached)); num(fmtInt(t.total)); num(fmtInt(t.calls));
+    num(fmtInt(t.prompt)); num(fmtInt(t.completion)); num(fmtInt(t.cached)); num(fmtInt(uncachedOf(t))); num(fmtInt(t.reasoning), 'num col-reasoning');
+    num(fmtInt(t.total)); num(fmtInt(t.calls)); num(t.calls ? fmtInt(t.total / t.calls) : '—');
     const costCell = el('td', 'num', fmtCost(t));
     if (t.unpriced > 0) costCell.title = `${t.unpriced} row(s) have no price (model has no unambiguous Azure list price); cost is a lower bound.`;
     tr.appendChild(costCell);
@@ -527,11 +787,12 @@ function renderTree(root) {
     bar.appendChild(fill);
     shareCell.appendChild(bar);
     tr.appendChild(shareCell);
-    num(fmtLatency(t)); num(t.calls ? fmtPct(t.errors / t.calls) : '—'); num(fmtLast(t.lastSeen), 'when');
+    num(fmtLatency(t)); num(fmtRunLatency(t)); num(t.calls ? fmtPct(t.errors / t.calls) : '—'); num(fmtLast(t.lastSeen), 'when');
     body.appendChild(tr);
     if (hasKids && dash.expanded.has(node.id)) node.children.forEach((c) => walk(c, depth + 1));
   };
   walk(root, 0);
+  $('treeTable').classList.toggle('no-reasoning', root.totals.reasoning === 0);
   dash.tree = root;
 }
 
@@ -565,9 +826,12 @@ function renderAll(refresh = true) {
   const root = buildTree(records, { tenantLabel: `Tenant: ${tenantLabel}`, byPeriod: dash.byPeriod, grain: dash.grain });
   if (dash.expanded.size === 0 || !dash.expanded.has('root')) dash.expanded = defaultExpanded(root);
   $('dashBody').classList.remove('hidden');
+  const win = dash.report.windowStartUtc ? `${String(dash.report.windowStartUtc).slice(0, 10)} → ${String(dash.report.windowEndUtc).slice(0, 10)} UTC` : '';
+  $('reportSubtitle').textContent = [tenantLabel, `${new Set(dash.records.map((r) => r.subscriptionId).filter(Boolean)).size} subscription(s)`, win].filter(Boolean).join('  ·  ');
+  renderFilterState();
   renderKpis(records, totals);
-  renderTrend(records);
-  renderTopAgents(records);
+  renderTrend(records, totals);
+  renderTops(dash.records);
   renderTree(root);
   renderPeriodTable(records);
   renderWarnings(dash.report);
@@ -680,13 +944,67 @@ function stopLive() {
   document.querySelectorAll('#rangeChips .chip').forEach((c) => { c.disabled = false; });
 }
 
+// Live refresh interval: a number plus a minutes/hours unit, never below one minute (each refresh re-scans Azure and queries
+// every linked Application Insights) and never above one day.
+const LIVE_MIN_MS = 60 * 1000;
+const LIVE_MAX_MS = 24 * 60 * 60 * 1000;
+const LIVE_STORE = 'foundryReport.liveInterval';
+
+function liveIntervalMs() {
+  const raw = Number($('liveEvery').value);
+  const n = Number.isFinite(raw) && raw > 0 ? Math.max(1, Math.floor(raw)) : 5;
+  const unit = Number($('liveUnit').value) || LIVE_MIN_MS;
+  return Math.min(LIVE_MAX_MS, Math.max(LIVE_MIN_MS, n * unit));
+}
+
+function describeInterval(ms) {
+  return ms % 3600000 === 0 ? `${ms / 3600000} hour${ms === 3600000 ? '' : 's'}` : `${Math.round(ms / 60000)} minute${ms === 60000 ? '' : 's'}`;
+}
+
+function loadLiveInterval() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LIVE_STORE) || 'null'); } catch { /* storage unavailable or corrupt: use the default */ }
+  const unit = saved && ['60000', '3600000'].includes(String(saved.unit)) ? String(saved.unit) : '60000';
+  const every = saved && Number.isInteger(saved.every) && saved.every > 0 ? saved.every : 5;
+  $('liveUnit').value = unit;
+  $('liveEvery').value = String(every);
+  normalizeLiveInterval();
+}
+
+// Keeps the typed value inside the allowed range and remembers it.
+function normalizeLiveInterval() {
+  const ms = liveIntervalMs();
+  const unit = $('liveUnit').value === '3600000' ? 3600000 : 60000;
+  $('liveEvery').value = String(Math.max(1, Math.round(ms / unit)));
+  try { localStorage.setItem(LIVE_STORE, JSON.stringify({ every: Number($('liveEvery').value), unit })); } catch { /* not critical */ }
+  $('liveHint').textContent = `Next check ${describeInterval(ms)} after each run.`;
+}
+
+function scheduleNextLive(generation) {
+  clearTimeout(liveTimer);
+  if (!$('liveMetrics').checked || generation !== liveGeneration) return;
+  const ms = liveIntervalMs();
+  liveNextAt = Date.now() + ms;
+  liveTimer = setTimeout(() => refreshLive(generation), ms);
+}
+
+let liveNextAt = 0;
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
 async function refreshLive(generation) {
   if (!$('liveMetrics').checked || generation !== liveGeneration) return;
   if (!reportRunning) {
     applyRange('today');
     await runReport(true, generation);
   }
-  if ($('liveMetrics').checked && generation === liveGeneration) liveTimer = setTimeout(() => refreshLive(generation), 30000);
+  scheduleNextLive(generation);
+  if ($('liveMetrics').checked && generation === liveGeneration && liveNote) $('liveStatus').textContent = liveStatusText(liveNote);
+}
+
+let liveNote = '';
+
+function liveStatusText(prefix) {
+  return `${prefix} Next check at ${clock(liveNextAt)} (every ${describeInterval(liveIntervalMs())}).`;
 }
 
 $('liveMetrics').addEventListener('change', () => {
@@ -699,9 +1017,15 @@ $('liveMetrics').addEventListener('change', () => {
   document.querySelectorAll('#rangeChips .chip').forEach((c) => { c.disabled = true; });
   const generation = ++liveGeneration;
   $('liveStatus').className = 'status info';
-  $('liveStatus').textContent = 'Waiting for current telemetry. Usage appears once Application Insights has ingested it, which can take several minutes.';
+  $('liveStatus').textContent = `Waiting for current telemetry. Usage appears once Application Insights has ingested it, which can take several minutes. Refreshing every ${describeInterval(liveIntervalMs())}.`;
   refreshLive(generation);
 });
+
+// Changing the interval while live is on takes effect from the next scheduled check.
+['liveEvery', 'liveUnit'].forEach((id) => $(id).addEventListener('change', () => {
+  normalizeLiveInterval();
+  if ($('liveMetrics').checked && !reportRunning) scheduleNextLive(liveGeneration);
+}));
 
 async function runReport(live = false, generation = liveGeneration) {
   if (reportRunning) return;
@@ -726,7 +1050,7 @@ async function runReport(live = false, generation = liveGeneration) {
     if (r.error) {
       status.className = 'status err';
       status.textContent = r.error;
-      if (live) $('liveStatus').textContent = 'Refresh failed. Last successful values remain visible; retrying in 30 seconds.';
+      if (live) liveNote = 'Refresh failed. Last successful values remain visible.';
       return;
     }
     dash.report = r;
@@ -743,12 +1067,12 @@ async function runReport(live = false, generation = liveGeneration) {
       status.className = (r.warnings || []).length ? 'status info' : 'status ok';
       status.textContent = `✔ ${live ? 'Live usage updated' : 'Report generated'} — ${usageRows} usage row(s) across ${projects} Foundry project(s), ${window_}.${(r.warnings || []).length ? ` ${(r.warnings || []).length} warning(s) below.` : ''}`;
     }
-    if (live) $('liveStatus').textContent = `Last checked: ${new Date().toISOString()}. Next check 30 seconds after this run.`;
+    if (live) liveNote = `Last checked: ${new Date().toISOString()}.`;
   } catch (e) {
     if (live && (generation !== liveGeneration || !$('liveMetrics').checked)) return;
     status.className = 'status err';
     status.textContent = String(e);
-    if (live) $('liveStatus').textContent = 'Refresh failed. Last successful values remain visible; retrying in 30 seconds.';
+    if (live) liveNote = 'Refresh failed. Last successful values remain visible.';
   } finally {
     reportRunning = false;
     $('btnRunReport').disabled = false;
@@ -762,6 +1086,7 @@ $('btnRunReport').addEventListener('click', () => runReport($('liveMetrics').che
 // ============================================================================
 async function openDashboard(from) {
   window.viewerFrom = from || 'step5';
+  document.body.classList.add('pbi');
   $('appRoot').classList.add('wide');
   $('landing').classList.add('hidden');
   $('stepsBar').classList.add('hidden');
@@ -773,12 +1098,15 @@ async function openDashboard(from) {
   setSourceUi();
   setGrain('day');
   applyRange('7');
+  loadLiveInterval();
+  clearFilters();
   await loadScope();
   if (dash.allSubs.length) runReport();
 }
 
 function closeDashboard() {
   stopLive();
+  document.body.classList.remove('pbi');
   $('viewer').classList.add('hidden');
   if (window.viewerFrom === 'landing') showLanding(); else showStep(5);
 }

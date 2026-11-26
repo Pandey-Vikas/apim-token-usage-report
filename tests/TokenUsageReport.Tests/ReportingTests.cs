@@ -343,7 +343,8 @@ public sealed class UsageCsvTests
     private static UsageFact Fact(string day, string agent = "Alpha", long tokens = 100, decimal? estimated = 0.01m, decimal? reported = null) => new()
     {
         Day = day, Scope = 0, AgentName = agent, AgentId = agent.ToLowerInvariant(), Model = "gpt-4o-mini", Deployment = "gpt-4o-mini",
-        PromptTokens = tokens, TotalTokens = tokens, Calls = 2, DurationMsSum = 1000, EstimatedCost = estimated, ReportedCost = reported,
+        PromptTokens = tokens, TotalTokens = tokens, Calls = 2, DurationMsSum = 1000, Runs = 2, RunDurationMsSum = 2000,
+        EstimatedCost = estimated, ReportedCost = reported,
         CostBasis = estimated is null ? "" : "list", FirstSeen = day + "T01:00:00Z", LastSeen = day + "T02:00:00Z",
     };
 
@@ -374,15 +375,21 @@ public sealed class UsageCsvTests
         var lines = csv.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal(3, lines.Length); // header + two weeks
         Assert.StartsWith("TenantId,Tenant,SubscriptionId,Subscription,ResourceGroup,FoundryResource,FoundryProject,AppInsights,Agent", lines[0]);
+        var header = lines[0].Split(',');
+        string Col(string[] row, string name) => row[Array.IndexOf(header, name)];
         var week1 = lines[1].Split(',');
-        Assert.Equal("2026-11-23", week1[12]);
-        Assert.Equal("200", week1[16]);   // TotalTokens summed across the two days
-        Assert.Equal("4", week1[17]);     // Calls
-        Assert.Equal("500", week1[19]);   // weighted latency: 2000 ms over 4 calls
-        Assert.Equal("", week1[21]);      // one day has no price, so no partial (understated) sum
-        Assert.Equal("mixed", week1[22]);
+        Assert.Equal("2026-11-23", Col(week1, "PeriodStart"));
+        Assert.Equal("200", Col(week1, "TotalTokens"));            // summed across the two days
+        Assert.Equal("4", Col(week1, "Calls"));
+        Assert.Equal("500", Col(week1, "AvgModelCallLatencyMs"));  // weighted: 2000 ms over 4 model calls
+        Assert.Equal("4", Col(week1, "AgentRuns"));
+        Assert.Equal("1000", Col(week1, "AvgAgentRunLatencyMs"));  // end-to-end run time is tracked separately: 4000 ms over 4 runs
+        Assert.Equal("200", Col(week1, "UncachedPromptTokens"));   // no cached tokens in the fixture
+        Assert.Equal("50", Col(week1, "AvgTokensPerCall"));
+        Assert.Equal("", Col(week1, "EstimatedCostUsd"));          // one day has no price, so no partial (understated) sum
+        Assert.Equal("mixed", Col(week1, "CostBasis"));
         var week2 = lines[2].Split(',');
-        Assert.Equal(("2026-11-30", "0.01", "list"), (week2[12], week2[21], week2[22]));
+        Assert.Equal(("2026-11-30", "0.01", "list"), (Col(week2, "PeriodStart"), Col(week2, "EstimatedCostUsd"), Col(week2, "CostBasis")));
     }
 
     [Fact]
@@ -413,7 +420,7 @@ public sealed class UsageQueryTests
         var errors = code.GetDiagnostics().Where(d => d.Severity == "Error").ToList();
         Assert.True(errors.Count == 0, string.Join(Environment.NewLine, errors.Select(e => $"{e.Start}: {e.Message}")));
         var result = Assert.IsType<TableSymbol>(code.ResultType);
-        Assert.Equal(UsageQueryRunner.RequiredColumns.OrderBy(c => c), result.Columns.Select(c => c.Name).OrderBy(c => c));
+        Assert.Equal(UsageQueryRunner.RequiredColumns.Concat(UsageQueryRunner.OptionalColumns).OrderBy(c => c), result.Columns.Select(c => c.Name).OrderBy(c => c));
     }
 
     private static string Table(object?[][] rows, string? omit = null) => System.Text.Json.JsonSerializer.Serialize(new

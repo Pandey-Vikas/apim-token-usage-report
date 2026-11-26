@@ -48,7 +48,8 @@ public sealed class DiscoveryResult
 public sealed record UsageRow(
     DateTime Day, string ProjectId, string AgentId, string AgentName, string Model, string Deployment, string Backend,
     long PromptTokens, long CompletionTokens, long CachedTokens, long Calls, long Errors, double DurationMsSum,
-    decimal? ReportedCost, string CostCurrency, DateTimeOffset? FirstSeen, DateTimeOffset? LastSeen);
+    decimal? ReportedCost, string CostCurrency, DateTimeOffset? FirstSeen, DateTimeOffset? LastSeen,
+    long ReasoningTokens = 0, long CacheWriteTokens = 0, long Runs = 0, double RunDurationMsSum = 0);
 
 /// <summary>A (Foundry project, Application Insights) pair that usage rows belong to; facts reference it by index.</summary>
 public sealed class ReportScope
@@ -77,10 +78,17 @@ public sealed class UsageFact
     public long PromptTokens { get; init; }
     public long CompletionTokens { get; init; }
     public long CachedTokens { get; init; }
+    /// <summary>Reasoning tokens (a subset of completion tokens); only present when telemetry reports them.</summary>
+    public long ReasoningTokens { get; init; }
+    public long CacheWriteTokens { get; init; }
     public long TotalTokens { get; init; }
     public long Calls { get; init; }
     public long Errors { get; init; }
+    /// <summary>Sum of model-call durations (one LLM request each).</summary>
     public double DurationMsSum { get; init; }
+    /// <summary>Agent runs (end-to-end invoke_agent spans) and their summed duration, including tool calls and waits.</summary>
+    public long Runs { get; init; }
+    public double RunDurationMsSum { get; init; }
     public decimal? ReportedCost { get; init; }
     public decimal? EstimatedCost { get; init; }
     public string CostCurrency { get; init; } = "";

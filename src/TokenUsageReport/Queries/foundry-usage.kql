@@ -18,6 +18,11 @@ let spans = materialize(
              Cached = coalesce(tolong(d['gen_ai.usage.cache_read.input_tokens']), tolong(d['gen_ai.usage.cached_tokens']),
                                tolong(d['gen_ai.usage.input_tokens_details.cached_tokens']),
                                tolong(d['llm.token_count.prompt_details.cache_read']), long(0)),
+             Reasoning = coalesce(tolong(d['gen_ai.usage.reasoning.output_tokens']), tolong(d['gen_ai.usage.reasoning_tokens']),
+                                  tolong(d['gen_ai.usage.output_tokens_details.reasoning_tokens']),
+                                  tolong(d['llm.token_count.completion_details.reasoning']), long(0)),
+             CacheWrite = coalesce(tolong(d['gen_ai.usage.cache_creation.input_tokens']), tolong(d['gen_ai.usage.cache_write.input_tokens']),
+                                   tolong(d['llm.token_count.prompt_details.cache_write']), long(0)),
              Cost = coalesce(todecimal(d['gen_ai.usage.cost']), todecimal(d['llm.cost.total']),
                              todecimal(m['gen_ai.usage.cost']), todecimal(m['llm.cost.total'])),
              CostCurrency = coalesce(tostring(d['gen_ai.usage.cost.currency']), tostring(d['llm.cost.currency'])),
@@ -30,8 +35,14 @@ let spans = materialize(
              Failed = tostring(column_ifexists('success', '')) == 'False' or isnotempty(tostring(d['error.type']))
     | extend RecordKey = iff(isnotempty(SpanId), strcat(TraceId, '/', SpanId), strcat(SourceTable, '/', tostring(itemId)))
     | project timestamp, SourceTable, TraceId, SpanId, ParentId, RecordKey, Operation, AgentId, AgentName,
-              Prompt, Completion, Cached, Cost, CostCurrency, Model, Deployment, Backend, ProjectId, DurationMs, Failed
+              Prompt, Completion, Cached, Reasoning, CacheWrite, Cost, CostCurrency, Model, Deployment, Backend, ProjectId, DurationMs, Failed
 );
+// End-to-end duration of each agent run (the invoke_agent span). It is credited once to the first model call of the run
+// so that summing across rows never counts a run twice.
+let agentRuns = spans
+    | where Operation in ('invoke_agent', 'execute_agent', 'run_agent') and isnotempty(SpanId) and isnotnull(DurationMs)
+    | summarize arg_max(timestamp, DurationMs) by TraceId, RunSpanId = SpanId
+    | project TraceId, RunSpanId, RunDurationMs = DurationMs;
 let parents = spans
     | where isnotempty(SpanId) and (isnotempty(AgentId) or isnotempty(AgentName))
     | summarize arg_max(timestamp, AgentId, AgentName) by TraceId, ParentSpanId = SpanId
@@ -62,6 +73,9 @@ usage
 | where isnull(HasChildUsage)
 | join kind=leftouter parents on TraceId, $left.ParentId == $right.ParentSpanId
 | join kind=leftouter agents on TraceId
+| join kind=leftouter agentRuns on TraceId, $left.ParentId == $right.RunSpanId
+| order by TraceId asc, RunSpanId asc, timestamp asc
+| extend IsRunFirst = isnotempty(RunSpanId) and (TraceId != prev(TraceId) or RunSpanId != prev(RunSpanId))
 | extend OwnAgent = isnotempty(AgentId) or isnotempty(AgentName),
          ParentAgent = isnotempty(ParentAgentId) or isnotempty(ParentAgentName)
 | extend AgentId = case(OwnAgent, AgentId, ParentAgent, ParentAgentId, TraceAgentId),
@@ -69,11 +83,13 @@ usage
 // "name:version" ids are merged across versions so an agent is one row regardless of redeploys.
 | extend AgentId = tostring(split(AgentId, ':')[0])
 | summarize PromptTokens = sum(coalesce(Prompt, 0)), CompletionTokens = sum(coalesce(Completion, 0)), CachedTokens = sum(Cached),
+            ReasoningTokens = sum(Reasoning), CacheWriteTokens = sum(CacheWrite),
             Calls = count(), Errors = countif(Failed), DurationMsSum = sum(DurationMs),
+            Runs = countif(IsRunFirst), RunDurationMsSum = sumif(RunDurationMs, IsRunFirst),
             CostRows = countif(isnotnull(Cost)), CostSum = sum(Cost),
             FirstSeen = min(timestamp), LastSeen = max(timestamp)
     by Day = startofday(timestamp), ProjectId, AgentId, AgentName, Model, Deployment, Backend, CostCurrency
 | extend ReportedCost = iff(CostRows == Calls, CostSum, decimal(null))
 | project Day, ProjectId, AgentId, AgentName, Model, Deployment, Backend, PromptTokens, CompletionTokens, CachedTokens,
-          Calls, Errors, DurationMsSum, ReportedCost, CostCurrency, FirstSeen, LastSeen
+          ReasoningTokens, CacheWriteTokens, Calls, Errors, DurationMsSum, Runs, RunDurationMsSum, ReportedCost, CostCurrency, FirstSeen, LastSeen
 | order by Day asc, PromptTokens desc

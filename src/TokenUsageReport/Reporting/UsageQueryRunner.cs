@@ -19,6 +19,9 @@ public sealed class UsageQueryRunner : IUsageSource
         "CachedTokens", "Calls", "Errors", "DurationMsSum", "ReportedCost", "CostCurrency", "FirstSeen", "LastSeen",
     };
 
+    /// <summary>Columns the bundled query also returns; a custom query may omit them.</summary>
+    public static readonly string[] OptionalColumns = { "ReasoningTokens", "CacheWriteTokens", "Runs", "RunDurationMsSum" };
+
     private readonly LogsQueryClient _client;
     private readonly string _query;
 
@@ -57,6 +60,9 @@ public sealed class UsageQueryRunner : IUsageSource
         foreach (var row in table.Rows)
         {
             object? V(string name) => row[index[name]];
+            // Newer columns are optional so a custom or older query that lacks them still loads.
+            long OptLong(string name) => index.TryGetValue(name, out var ix) ? Long(row[ix]) : 0;
+            double OptDouble(string name) => index.TryGetValue(name, out var ix) ? Double(row[ix]) : 0;
             rows.Add(new UsageRow(
                 Day: Date(V("Day"))?.UtcDateTime.Date ?? throw new InvalidOperationException("A usage row has no Day."),
                 ProjectId: Text(V("ProjectId")), AgentId: Text(V("AgentId")), AgentName: Text(V("AgentName")),
@@ -64,7 +70,9 @@ public sealed class UsageQueryRunner : IUsageSource
                 PromptTokens: Long(V("PromptTokens")), CompletionTokens: Long(V("CompletionTokens")), CachedTokens: Long(V("CachedTokens")),
                 Calls: Long(V("Calls")), Errors: Long(V("Errors")), DurationMsSum: Double(V("DurationMsSum")),
                 ReportedCost: Decimal(V("ReportedCost")), CostCurrency: Text(V("CostCurrency")),
-                FirstSeen: Date(V("FirstSeen")), LastSeen: Date(V("LastSeen"))));
+                FirstSeen: Date(V("FirstSeen")), LastSeen: Date(V("LastSeen")),
+                ReasoningTokens: OptLong("ReasoningTokens"), CacheWriteTokens: OptLong("CacheWriteTokens"),
+                Runs: OptLong("Runs"), RunDurationMsSum: OptDouble("RunDurationMsSum")));
         }
         return rows;
     }
