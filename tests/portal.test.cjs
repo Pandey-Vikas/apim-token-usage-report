@@ -5,7 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 // A tiny DOM: enough for the portal scripts, with real class lists, option selection and child tracking.
-function portal(responses = {}) {
+function portal(responses = {}, opts = {}) {
   class Element {
     constructor(tag) {
       this.tag = tag;
@@ -74,23 +74,29 @@ function portal(responses = {}) {
   const timers = new Map();
   const requests = [];
   let nextTimer = 0;
+  const win = { ...(opts.hosted ? { HOSTED: true, location: { hash: opts.hash || '', pathname: '/', search: '', host: 'app.example.net' } } : {}) };
+  const history = [];
+  win.history = { replaceState: (...args) => history.push(args) };
+  const store = new Map(Object.entries(opts.session || {}));
+  const sessionStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
   const context = vm.createContext({
-    document, window: {}, console, URL, clearInterval, Blob: class { constructor(parts) { this.parts = parts; } },
+    document, window: win, console, URL, clearInterval, Blob: class { constructor(parts) { this.parts = parts; } }, sessionStorage,
     setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id) { timers.delete(id); },
     fetch: async (url, options) => ({
       json: async () => {
-        if (!(url in responses)) throw new Error(`Unexpected request: ${url}`);
-        requests.push({ url, body: options?.body && JSON.parse(options.body) });
-        return typeof responses[url] === 'function' ? responses[url]() : responses[url];
+        const key = url in responses ? url : url.split('?')[0];
+        if (!(key in responses)) throw new Error(`Unexpected request: ${url}`);
+        requests.push({ url, body: options?.body && JSON.parse(options.body), headers: options?.headers || {} });
+        return typeof responses[key] === 'function' ? responses[key]() : responses[key];
       },
     }),
   });
   const root = path.join(__dirname, '..', 'gui', 'wwwroot');
-  vm.runInContext(fs.readFileSync(path.join(root, 'wizard.js'), 'utf8').replace(/\binit\(\);\s*$/, ''), context);
+  vm.runInContext(fs.readFileSync(path.join(root, 'wizard.js'), 'utf8').replace(/if \(!window\.HOSTED\) init\(\);\s*$/, ''), context);
   vm.runInContext(fs.readFileSync(path.join(root, 'dashboard.js'), 'utf8'), context);
   return {
-    context, get, timers, requests,
+    context, get, timers, requests, history, store,
     run: (code) => vm.runInContext(code, context),
     setMode(name, value) { radios[name].forEach((r) => { r.checked = r.value === value; }); },
   };
@@ -385,6 +391,58 @@ test('week breakdown adds period rows under each leaf, in chronological order', 
     return JSON.stringify(model.children.map((c) => [c.level, c.label, c.totals.total]));
   })()`));
   assert.deepEqual(periods, [['Period', 'Week of 23 Nov', 1650], ['Period', 'Week of 30 Nov', 10]]);
+});
+
+const tick = () => new Promise((r) => setImmediate(r));
+const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
+
+test('hosted: a #key= link opens the report, sends the key as a header and removes it from the address bar', async () => {
+  const p = portal({ '/api/usage': report() }, { hosted: true, hash: '#key=s3cret%2Fkey' });
+  await settle();
+  const req = p.requests.find((r) => r.url.startsWith('/api/usage?'));
+  assert.ok(req, 'the report is requested from the app itself');
+  assert.match(req.url, /^\/api\/usage\?startDate=\d{4}-\d\d-\d\d&endDate=\d{4}-\d\d-\d\d$/);
+  assert.equal(req.headers['X-Api-Key'], 's3cret/key');
+  assert.equal(p.history.length, 1, 'the fragment is replaced out of the URL');
+  assert.equal(p.history[0][2], '/');
+  assert.equal(p.store.get('foundryReport.apiKey'), 's3cret/key');
+  assert.equal(p.get('keyGateStatus').textContent || '', '', 'the key prompt is never shown or used');
+  assert.equal(p.get('viewer').hidden, false);
+  assert.ok(p.context.document.body.classList.contains('hosted'));
+  assert.match(p.get('kpiCards').allText, /1,650/);
+  assert.deepEqual([...new Set(p.requests.map((r) => r.url.split('?')[0]))], ['/api/usage'], 'no local-portal endpoints are called');
+});
+
+test('hosted: without a key the page asks for one, then loads the report with it', async () => {
+  const p = portal({ '/api/usage': report() }, { hosted: true });
+  await settle();
+  assert.equal(p.get('keyGate').hidden, false);
+  assert.equal(p.get('viewer').hidden, true);
+  assert.equal(p.requests.length, 0, 'nothing is requested before a key is entered');
+  p.get('apiKeyInput').value = ' abc123 ';
+  await p.context.submitApiKey();
+  await settle();
+  assert.equal(p.requests[0].headers['X-Api-Key'], 'abc123');
+  assert.equal(p.get('keyGate').hidden, true);
+  assert.match(p.get('kpiCards').allText, /1,650/);
+});
+
+test('hosted: a rejected key returns to the prompt and forgets the key', async () => {
+  const p = portal({ '/api/usage': { error: 'Invalid or missing X-Api-Key.' } }, { hosted: true, session: { 'foundryReport.apiKey': 'old' } });
+  await settle();
+  assert.equal(p.get('keyGate').hidden, false);
+  assert.equal(p.get('viewer').hidden, true);
+  assert.match(p.get('keyGateStatus').textContent, /not accepted/);
+  assert.equal(p.store.has('foundryReport.apiKey'), false);
+  p.get('btnLock').listeners.click(); // sign out also forgets the key
+  assert.equal(p.get('keyGate').hidden, false);
+});
+
+test('the local portal is unaffected by hosted mode and sends no API key', async () => {
+  const p = dashboardPortal({ '/api/usage': report() });
+  await p.context.runReport();
+  assert.ok(p.requests.every((r) => !r.headers['X-Api-Key']));
+  assert.equal(p.context.document.body.classList.contains('hosted'), false);
 });
 
 // ---------------------------------------------------------------- dashboard behaviour

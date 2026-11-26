@@ -54,3 +54,5 @@ if ($rows.Count -eq 0) {
     Write-Host ("Total tokens: {0}" -f ($rows | Measure-Object Total -Sum).Sum)
 }
 Write-Host "Verification passed." -ForegroundColor Green
+Write-Host "`nDashboard (asks for the API key) : $url/"
+Write-Host "One-click link (contains the key): $url/#key=$key   <- share only with people who may see this data"

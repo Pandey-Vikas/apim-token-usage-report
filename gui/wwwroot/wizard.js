@@ -1,8 +1,9 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
+const apiHeaders = () => (window.HOSTED_KEY ? { 'X-Api-Key': window.HOSTED_KEY } : {});
 const api = {
-  async get(path) { const r = await fetch(path); return r.json(); },
+  async get(path) { const r = await fetch(path, { headers: apiHeaders() }); return r.json(); },
   async post(path, body) {
     const r = await fetch(path, {
       method: 'POST',
@@ -730,4 +731,5 @@ async function init() {
     refreshStatus();
   }
 }
-init();
+// The deployed app serves this page in hosted mode, where only the report dashboard is used.
+if (!window.HOSTED) init();

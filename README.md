@@ -21,7 +21,7 @@ Run them from the repository root in Windows PowerShell 5.1 or PowerShell 7.
 | 3. Run all tests and builds | `.\scripts\run-tests.ps1` |
 | 4. Open the local report dashboard / install wizard | `.\scripts\start-portal.ps1` (opens http://127.0.0.1:5099) |
 | 5. Deploy to Azure (no GUI) | `.\scripts\deploy-foundry-report.ps1 -SubscriptionIds <sub1>,<sub2> -ResourceGroup <rg> -Location <region>` |
-| 6. Verify the deployment | `.\scripts\verify-deployment.ps1 -ResourceGroup <rg> -AppName <app>` |
+| 6. Verify the deployment and get the shareable dashboard link | `.\scripts\verify-deployment.ps1 -ResourceGroup <rg> -AppName <app>` |
 | 7. Run the report API on your machine | `.\scripts\run-local.ps1 -SubscriptionIds <sub1>` |
 | 8. Remove the deployment | `.\scripts\uninstall.ps1 -ResourceGroup <rg> -AppName <app> [-PlanName <plan>]` |
 
@@ -49,6 +49,24 @@ so it is off by default) and `-RunNow` (run one report at the end). Without `-Li
 per project, and agents appear once they have usage.
 
 Permissions needed to deploy: Owner (or Contributor + User Access Administrator) on the hosting resource group and on the monitored subscriptions.
+
+---
+
+## Sharing the dashboard (the deployed URL)
+
+The deployed app serves the same dashboard as the local portal at its root URL, e.g. `https://<app>.azurewebsites.net/`. Anyone who opens it
+is asked for the **API key** (the app's `REPORTS_API_KEY`); the page itself contains no data, and every number is fetched from `/api/usage`,
+which rejects requests without the key.
+
+- **Share the URL and the key separately:** the person opens the URL, pastes the key and clicks *Open report*. The key is kept only for
+  that browser tab (use **Sign out** to forget it) and is sent only to that site.
+- **Share one link:** `https://<app>.azurewebsites.net/#key=<api key>` opens the report directly. The part after `#` is never sent to the
+  server and is removed from the address bar after it is read. Anyone with that link can read the report, so share it like a password.
+- **Find the key / print both links:** `.\scripts\verify-deployment.ps1 -ResourceGroup <rg> -AppName <app>`, or
+  `az webapp config appsettings list -g <rg> -n <app> --query "[?name=='REPORTS_API_KEY'].value | [0]" -o tsv`.
+- **Rotate the key** (to revoke old links): `az webapp config appsettings set -g <rg> -n <app> --settings REPORTS_API_KEY=<new-key>`.
+- In this hosted view the subscriptions are the ones chosen at deploy time; there is no data-source or scope picker, and no Azure sign-in is
+  needed for viewers. To change the scope, re-run `.\scripts\deploy-foundry-report.ps1`.
 
 ---
 

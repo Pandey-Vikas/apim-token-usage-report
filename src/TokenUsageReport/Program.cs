@@ -58,7 +58,21 @@ app.Use(async (ctx, next) =>
     await next();
 });
 
-app.MapGet("/", () => Results.Text("Token Usage Report app is running. Reports API is under /api/ (X-Api-Key required)."));
+// The dashboard page and its scripts are public (they contain no data); the data endpoints under /api/ need the API key.
+foreach (var asset in WebAssets.Names)
+{
+    var body = WebAssets.ReadText(asset);
+    var contentType = WebAssets.ContentType(asset);
+    var route = asset == "index.html" ? "/" : "/" + asset;
+    app.MapGet(route, (HttpContext ctx) =>
+    {
+        ctx.Response.Headers["Cache-Control"] = "no-store";
+        ctx.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        ctx.Response.Headers["Referrer-Policy"] = "no-referrer";
+        ctx.Response.Headers["X-Frame-Options"] = "DENY";
+        return Results.Text(body, contentType);
+    });
+}
 app.MapGet("/healthz", () => Results.Json(new { ok = true, blob = app.Services.GetRequiredService<BlobReader>().Enabled }));
 
 // Generate a report on demand and return the CSV inline.

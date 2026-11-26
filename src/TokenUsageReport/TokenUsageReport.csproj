@@ -12,6 +12,11 @@
   <ItemGroup>
     <None Update="Queries\*.kql" CopyToOutputDirectory="PreserveNewest" />
     <EmbeddedResource Include="Queries\foundry-usage.kql" LogicalName="foundry-usage.kql" />
+    <!-- The report dashboard is the same page the local portal uses; the app serves it from memory at "/". -->
+    <EmbeddedResource Include="..\..\gui\wwwroot\index.html" LogicalName="web/index.html" />
+    <EmbeddedResource Include="..\..\gui\wwwroot\styles.css" LogicalName="web/styles.css" />
+    <EmbeddedResource Include="..\..\gui\wwwroot\wizard.js" LogicalName="web/wizard.js" />
+    <EmbeddedResource Include="..\..\gui\wwwroot\dashboard.js" LogicalName="web/dashboard.js" />
   </ItemGroup>
 
   <ItemGroup>

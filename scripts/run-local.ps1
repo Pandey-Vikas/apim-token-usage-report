@@ -24,6 +24,7 @@ if (-not $account) { throw "Not signed in. Run 'az login' first." }
 
 $env:REPORT_SUBSCRIPTIONS = (($SubscriptionIds | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ',')
 $env:REPORT_TENANT_ID = $account.tenantId
+if ($account.tenantDisplayName) { $env:REPORT_TENANT_NAME = $account.tenantDisplayName }
 $env:REPORTS_API_KEY = $ApiKey
 $env:ASPNETCORE_URLS = "http://127.0.0.1:$Port"
 Write-Host "Report app: http://127.0.0.1:$Port  (X-Api-Key: $ApiKey)" -ForegroundColor Cyan

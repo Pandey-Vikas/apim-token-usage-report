@@ -1,5 +1,8 @@
 'use strict';
 
+// True when the deployed app serves this page (it injects window.HOSTED); the local portal never sets it.
+const HOSTED = !!window.HOSTED;
+
 // ============================================================================
 // Pure data helpers (no DOM): flatten the report, filter, group, total.
 // ============================================================================
@@ -945,13 +948,14 @@ function renderScope() {
 }
 
 function setSourceUi() {
-  const local = $('dashSource').value === 'local';
+  const local = !HOSTED && $('dashSource').value === 'local';
   $('scopeBox').classList.toggle('hidden', !local);
   const cfg = window.savedConfig || {};
   $('viewerAppInfo').innerHTML = '';
-  const rows = local
-    ? [['Source', 'Your Azure sign-in (read-only, nothing is deployed)'], ['Signed in as', dash.account || $('whoami').textContent]]
-    : [['Source', 'Deployed app (managed identity, scope set at deploy time)'], ['App', cfg.appName], ['App URL', cfg.appUrl], ['Resource group', cfg.resourceGroup]];
+  let rows;
+  if (HOSTED) rows = [['Source', 'Live report from this app (read-only; the subscriptions were chosen when it was deployed)'], ['Address', window.location?.host || '']];
+  else if (local) rows = [['Source', 'Your Azure sign-in (read-only, nothing is deployed)'], ['Signed in as', dash.account || $('whoami').textContent]];
+  else rows = [['Source', 'Deployed app (managed identity, scope set at deploy time)'], ['App', cfg.appName], ['App URL', cfg.appUrl], ['Resource group', cfg.resourceGroup]];
   rows.filter(([, v]) => v).forEach(([k, v]) => {
     const row = el('div', 'row');
     row.appendChild(el('span', 'k', k));
@@ -1061,7 +1065,7 @@ async function runReport(live = false, generation = liveGeneration) {
   const status = $('viewerStatus');
   if (!startDate || !endDate) { status.className = 'status err'; status.textContent = 'Choose both a start date and an end date.'; return; }
   if (startDate > endDate) { status.className = 'status err'; status.textContent = 'The start date must be on or before the end date.'; return; }
-  const source = $('dashSource').value;
+  const source = HOSTED ? 'hosted' : $('dashSource').value;
   if (source === 'local' && dash.scope.size === 0) { status.className = 'status err'; status.textContent = 'Select at least one subscription in the scope.'; return; }
 
   reportRunning = true;
@@ -1069,11 +1073,13 @@ async function runReport(live = false, generation = liveGeneration) {
   status.className = 'status info';
   status.innerHTML = `<span class="spinner"></span>Discovering Foundry resources and querying every linked Application Insights for ${startDate} → ${endDate}… this can take up to a minute.`;
   try {
-    await ensureTenant();
-    const r = source === 'app'
-      ? await api.post('/api/app-usage', { startDate, endDate })
-      : await api.post('/api/usage', { subscriptionIds: [...dash.scope], startDate, endDate, tenantId: dash.tenantId, tenantName: dash.tenantName });
+    if (!HOSTED) await ensureTenant();
+    let r;
+    if (source === 'hosted') r = await api.get(`/api/usage?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`);
+    else if (source === 'app') r = await api.post('/api/app-usage', { startDate, endDate });
+    else r = await api.post('/api/usage', { subscriptionIds: [...dash.scope], startDate, endDate, tenantId: dash.tenantId, tenantName: dash.tenantName });
     if (live && (generation !== liveGeneration || !$('liveMetrics').checked)) return;
+    if (HOSTED && isKeyRejected(r)) { stopLive(); showKeyGate('That API key was not accepted. Check it and try again.'); return; }
     if (r.error) {
       status.className = 'status err';
       status.textContent = r.error;
@@ -1120,6 +1126,16 @@ async function openDashboard(from) {
   $('stepsBar').classList.add('hidden');
   for (let i = 1; i <= 5; i++) $(`step${i}`).classList.add('hidden');
   $('viewer').classList.remove('hidden');
+  $('keyGate').classList.add('hidden');
+  if (HOSTED) {
+    setGrain('day');
+    applyRange('7');
+    loadLiveInterval();
+    clearFilters();
+    setSourceUi();
+    runReport();
+    return;
+  }
   const hasApp = !!(window.savedConfig || {}).appUrl;
   $('optDeployedApp').disabled = !hasApp;
   $('dashSource').value = 'local';
@@ -1140,3 +1156,60 @@ function closeDashboard() {
   if (window.viewerFrom === 'landing') showLanding(); else showStep(5);
 }
 $('btnViewerBack').addEventListener('click', closeDashboard);
+
+// ============================================================================
+// Hosted mode: the deployed app serves this page; the API key protects the data calls.
+// ============================================================================
+const KEY_STORE = 'foundryReport.apiKey';
+
+// The app answers 401 (wrong/missing key) with { error: 'Invalid or missing X-Api-Key.' }.
+const isKeyRejected = (r) => !!r && typeof r.error === 'string' && /x-api-key/i.test(r.error);
+
+function showKeyGate(message) {
+  stopLive();
+  try { sessionStorage.removeItem(KEY_STORE); } catch { /* not critical */ }
+  window.HOSTED_KEY = '';
+  $('viewer').classList.add('hidden');
+  $('keyGate').classList.remove('hidden');
+  $('keyGateStatus').className = message ? 'status err' : 'status';
+  $('keyGateStatus').textContent = message || '';
+  $('apiKeyInput').value = '';
+}
+
+async function submitApiKey() {
+  const key = $('apiKeyInput').value.trim();
+  if (!key) { $('keyGateStatus').className = 'status err'; $('keyGateStatus').textContent = 'Enter the API key.'; return; }
+  window.HOSTED_KEY = key;
+  try { sessionStorage.setItem(KEY_STORE, key); } catch { /* not critical */ }
+  $('keyGate').classList.add('hidden');
+  await openDashboard('hosted');
+}
+$('btnApiKey').addEventListener('click', submitApiKey);
+$('btnLock').addEventListener('click', () => showKeyGate(''));
+$('apiKeyInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitApiKey(); });
+
+// A link like https://<app>/#key=<api key> opens the report directly. The fragment never reaches the server and is
+// removed from the address bar once read; the key is kept for this browser tab only.
+function startHosted() {
+  document.body.classList.add('hosted', 'pbi');
+  loadTheme();
+  $('landing').classList.add('hidden');
+  $('stepsBar').classList.add('hidden');
+  for (let i = 1; i <= 5; i++) $(`step${i}`).classList.add('hidden');
+  const fromLink = /[#&]key=([^&]+)/.exec(window.location?.hash || '');
+  let key = '';
+  if (fromLink) {
+    try { key = decodeURIComponent(fromLink[1]); } catch { key = ''; }
+    try { window.history.replaceState(null, '', window.location.pathname + window.location.search); } catch { /* not critical */ }
+  }
+  if (!key) { try { key = sessionStorage.getItem(KEY_STORE) || ''; } catch { key = ''; } }
+  if (!key) { showKeyGate(''); return; }
+  window.HOSTED_KEY = key;
+  try { sessionStorage.setItem(KEY_STORE, key); } catch { /* not critical */ }
+  openDashboard('hosted');
+}
+if (HOSTED) {
+  startHosted();
+  // Pasting a #key= link into a tab where the page is already open only changes the fragment (no reload).
+  window.addEventListener?.('hashchange', () => { if (/[#&]key=/.test(window.location?.hash || '')) { stopLive(); startHosted(); } });
+}

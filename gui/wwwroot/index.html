@@ -4,7 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Foundry Token Usage Report</title>
-<link rel="stylesheet" href="styles.css?v=11">
+<!--HOSTED-->
+<link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
 <div class="app" id="appRoot">
@@ -199,6 +200,16 @@
     </div>
   </section>
 
+  <!-- API key prompt (shown only when the page is served by the deployed app) -->
+  <section class="panel hidden" id="keyGate">
+    <h2>Enter the report API key</h2>
+    <p class="sub">This report is protected. Enter the API key you were given. It is kept only for this browser tab and sent only to this site.</p>
+    <label for="apiKeyInput">API key</label>
+    <input type="password" id="apiKeyInput" autocomplete="off" spellcheck="false" placeholder="X-Api-Key">
+    <div class="footer"><span></span><button class="primary" id="btnApiKey" type="button">Open report</button></div>
+    <div id="keyGateStatus" class="status" aria-live="polite"></div>
+  </section>
+
   <!-- Report dashboard -->
   <section class="panel hidden" id="viewer">
     <div class="viewer-head">
@@ -208,6 +219,7 @@
       </div>
       <div class="head-actions">
         <button class="secondary" id="btnTheme" type="button" title="Switch between light and dark" aria-pressed="false">🌙 Dark</button>
+        <button class="secondary hosted-only" id="btnLock" type="button" title="Forget the API key in this browser tab">🔒 Sign out</button>
         <button class="secondary" id="btnViewerBack">← Back</button>
       </div>
     </div>
@@ -372,7 +384,7 @@
     Signed in as <span id="whoami">—</span>
   </footer>
 </div>
-<script src="wizard.js?v=2"></script>
-<script src="dashboard.js?v=4"></script>
+<script src="wizard.js?v=3"></script>
+<script src="dashboard.js?v=7"></script>
 </body>
 </html>
