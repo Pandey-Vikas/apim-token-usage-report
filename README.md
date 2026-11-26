@@ -9,6 +9,49 @@ It is deliberately simple and cheap: **no storage account, no private endpoint, 
 The app generates the report **on demand** from Application Insights (which already retains
 the raw token telemetry) and returns it.
 
+## Quick start (everything is a script)
+
+All tasks are PowerShell scripts in this repository; nothing needs to be done by hand or through an assistant.
+Run them from the repository root in Windows PowerShell 5.1 or PowerShell 7.
+
+| Task | Command |
+|------|---------|
+| 1. Check tools and sign-in | `.\scripts\check-prerequisites.ps1` |
+| 2. Sign in to Azure | `az login` (add `--tenant <tenant-id>` for a specific tenant) |
+| 3. Run all tests and builds | `.\scripts\run-tests.ps1` |
+| 4. Open the local report dashboard / install wizard | `.\scripts\start-portal.ps1` (opens http://127.0.0.1:5099) |
+| 5. Deploy to Azure (no GUI) | `.\scripts\deploy-foundry-report.ps1 -SubscriptionIds <sub1>,<sub2> -ResourceGroup <rg> -Location <region>` |
+| 6. Verify the deployment | `.\scripts\verify-deployment.ps1 -ResourceGroup <rg> -AppName <app>` |
+| 7. Run the report API on your machine | `.\scripts\run-local.ps1 -SubscriptionIds <sub1>` |
+| 8. Remove the deployment | `.\scripts\uninstall.ps1 -ResourceGroup <rg> -AppName <app> [-PlanName <plan>]` |
+
+Typical first run:
+
+```powershell
+git clone https://github.com/Pandey-Vikas/apim-token-usage-report.git
+cd apim-token-usage-report
+.\scripts\check-prerequisites.ps1            # tools + which subscriptions you can see
+az login                                      # if the check says you are not signed in
+.\scripts\run-tests.ps1                       # optional: 68 .NET + 34 portal tests
+.\scripts\start-portal.ps1                    # look at the live dashboard from your own sign-in (nothing is deployed)
+.\scripts\deploy-foundry-report.ps1 -SubscriptionIds <sub-id> -ResourceGroup rg_tokenrpt -Location swedencentral
+.\scripts\verify-deployment.ps1 -ResourceGroup rg_tokenrpt -AppName <app name printed by the deploy>
+```
+
+What `deploy-foundry-report.ps1` does (it wraps [deploy/deploy.ps1](./deploy/deploy.ps1), which holds all the Azure logic):
+checks the sign-in, discovers the Application Insights components in the selected subscriptions (Azure Resource Graph), creates or
+reuses the resource group, App Service plan and web app, enables the managed identity, grants it **Reader** on the subscriptions and
+**Monitoring Reader** on those components, publishes the app, sets the API key (kept on re-runs) and prints the URL and key.
+Re-running it **updates** the same app. Useful options: `-AppName` / `-PlanName` / `-PlanSku F1|B1|B2|S1` to reuse or size the hosting,
+`-AppInsightsIds` to restrict access to specific components, `-IncludeFutureProjects` (Monitoring Reader on the whole subscriptions so new
+projects are included), `-ListIdleAgents` (opt-in *Foundry User* role so agents with no activity are listed; it can also read account keys,
+so it is off by default) and `-RunNow` (run one report at the end). Without `-ListIdleAgents` the app logs a harmless HTTP 403 warning
+per project, and agents appear once they have usage.
+
+Permissions needed to deploy: Owner (or Contributor + User Access Administrator) on the hosting resource group and on the monitored subscriptions.
+
+---
+
 ## Hierarchical Foundry report (default)
 
 The report is grouped **Tenant → Subscriptions → Resource groups → Foundry resources (and their linked
@@ -59,6 +102,7 @@ mode**, which is only active when `APPINSIGHTS_RESOURCE_ID` is set on the app. T
 
 Contents of this repo:
 
+- [scripts/](./scripts) — one script per task (check prerequisites, run tests, start the portal, deploy, verify, run locally, uninstall).
 - [src/TokenUsageReport](./src/TokenUsageReport) — the .NET 9 web app (secured reports API).
 - [deploy/deploy.ps1](./deploy/deploy.ps1) — one PowerShell script that provisions everything and deploys the app.
 - [gui/](./gui) — a local **Deployment Portal** (web GUI) for point-and-click sign-in, deployment and report viewing.
@@ -67,6 +111,7 @@ Contents of this repo:
 
 ## Table of contents
 
+0. [Quick start (scripts)](#quick-start-everything-is-a-script)
 1. [Architecture](#architecture)
 2. [Prerequisites](#prerequisites)
 3. [Installation (step by step)](#installation-step-by-step)
@@ -465,41 +510,27 @@ az webapp config appsettings set -g <rg> -n <app> --settings REPORTS_API_KEY=<ne
 
 ## Run locally
 
-### Regression checks
-
 ```powershell
-dotnet test .\tests\TokenUsageReport.Tests\TokenUsageReport.Tests.csproj
-node --test .\tests\portal.test.cjs
-dotnet build .\gui\DeployPortal.csproj
+.\scripts\run-tests.ps1                                       # builds + 68 .NET tests + 34 portal tests + script syntax
+.\scripts\start-portal.ps1                                    # dashboard and install wizard (add -Port 5100 -NoBrowser if needed)
+.\scripts\run-local.ps1 -SubscriptionIds <sub-id>             # the report API on http://127.0.0.1:5200 (header X-Api-Key: local-key)
 ```
 
-These check KQL semantics against Application Insights table schemas, mocked Azure Monitor responses,
-agent/cost CSV serialization, source fallback, region selection and empty-result UI handling.
-They do not replace validating the query against the client's actual telemetry.
+The tests check KQL semantics against Application Insights table schemas, mocked Azure Monitor responses, CSV serialization,
+pricing, discovery and the dashboard (filters, chart, top 5, live interval). They do not replace validating against real telemetry:
+send a prompt to an agent, wait a few minutes for ingestion and open the dashboard.
 
-```powershell
-cd src/TokenUsageReport
-$env:APPINSIGHTS_RESOURCE_ID = "/subscriptions/.../components/<appi>"
-$env:REPORTS_API_KEY         = "local-test-key"
-dotnet run
-```
-
-Locally it authenticates with your `az login` / Visual Studio credentials, so your identity needs
-**Monitoring Reader** on the App Insights component and **Reader** on the subscription.
+Locally the app and portal authenticate with your `az login` identity, so it needs **Reader** on the subscriptions and
+**Monitoring Reader** on the Application Insights components (and the *Foundry User* role if you want idle agents listed).
 
 ---
 
 ## Update / redeploy / uninstall
 
-- **Update:** `git pull`, then re-run `deploy.ps1` (or the portal) with the same parameters. The existing API key is kept.
-- **Uninstall:** delete the resource group created by the deploy (only if it is dedicated to this app):
-
-  ```powershell
-  az group delete --name <rg> --yes --no-wait
-  ```
-
-  If you reused a shared resource group, delete just the Web App (and the plan, if created by this deploy),
-  and remove the role assignments of its managed identity.
+- **Update:** `git pull`, then re-run `.\scripts\deploy-foundry-report.ps1` with the same parameters (the API key is kept), and
+  `.\scripts\verify-deployment.ps1`.
+- **Uninstall:** `.\scripts\uninstall.ps1 -ResourceGroup <rg> -AppName <app> [-PlanName <plan>]` removes the web app (and plan);
+  add `-DeleteResourceGroup` only when the group holds nothing else. It asks for confirmation unless `-Force` is given.
 
 ---
 
