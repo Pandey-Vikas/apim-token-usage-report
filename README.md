@@ -75,6 +75,10 @@ Application Insights) → Projects → Agents → Models**, with Daily / Weekly 
 **Top 5 models** → the **Detailed report** (expandable Tenant › Subscription › RG › Project › Agent › Model matrix with Azure portal links and
 "Break down by period"), then a by-period table. Detail CSV and grouped CSV export are built in.
 
+- **Group by (Day / Week / Month):** the time bucket used by the chart, the "By period" table, the peak card, "Break down by period" in the
+  detailed report and the detail CSV export. Weeks run Monday to Sunday and months are calendar months, both in UTC. It only changes how
+  usage is bucketed over time; totals, cost and the per-agent numbers are the same whichever you choose.
+- **Light / dark:** the header button switches the report between a light (Power BI) and a dark theme; the choice is remembered in the browser.
 - **Token breakdown:** total, input (prompt), output (completion), cached input and uncached input are always shown; *reasoning* and *cache write* tokens appear
   only when your telemetry reports them (Foundry traces currently carry input, output and cached tokens only). Each card has its own colour and toggles that line
   on the chart. The chart has Day/Week/Month grain, a legend, and a hover read-out of every line.

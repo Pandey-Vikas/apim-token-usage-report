@@ -600,6 +600,30 @@ test('series can be hidden from the chart by clicking a token card, and shown ag
   assert.equal(lines(), 5);
 });
 
+test('the report can switch between light and dark and the chart colours follow the theme', async () => {
+  const p = dashboardPortal({ '/api/usage': report() });
+  await p.context.runReport();
+  const body = p.context.document.body;
+  const stroke = () => (p.get('trendChart').innerHTML.match(/stroke="(#[0-9A-Fa-f]{6})"/) || [])[1];
+  const light = stroke();
+  p.get('btnTheme').listeners.click();
+  assert.ok(body.classList.contains('dark'));
+  assert.match(p.get('btnTheme').textContent, /Light/);
+  assert.notEqual(stroke(), light, 'lines use the lighter dark-theme shades');
+  p.get('btnTheme').listeners.click();
+  assert.ok(!body.classList.contains('dark'));
+  assert.equal(stroke(), light);
+});
+
+test('Group by explains what it changes for the chosen grain', () => {
+  const p = portal();
+  p.context.setGrain('week');
+  assert.match(p.get('grainHint').textContent, /Monday to Sunday/);
+  assert.match(p.get('grainHint').textContent, /By period/);
+  p.context.setGrain('month');
+  assert.match(p.get('grainHint').textContent, /calendar month/);
+});
+
 test('latency shows the model call and the whole agent run separately', async () => {
   const withRuns = report();
   withRuns.facts = withRuns.facts.map((f) => ({ ...f, runs: f.calls, runDurationMsSum: f.durationMsSum * 10 }));

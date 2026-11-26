@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Foundry Token Usage Report</title>
-<link rel="stylesheet" href="styles.css?v=9">
+<link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
 <div class="app" id="appRoot">
@@ -206,7 +206,10 @@
         <h2>Foundry token usage</h2>
         <div class="subtitle" id="reportSubtitle"></div>
       </div>
-      <button class="secondary" id="btnViewerBack">← Back</button>
+      <div class="head-actions">
+        <button class="secondary" id="btnTheme" type="button" title="Switch between light and dark" aria-pressed="false">🌙 Dark</button>
+        <button class="secondary" id="btnViewerBack">← Back</button>
+      </div>
     </div>
     <div id="viewerAppInfo" class="summary"></div>
 
@@ -219,12 +222,13 @@
         </select>
       </div>
       <div id="periodControls">
-        <label>Group by</label>
+        <label>Group by <span class="muted">(time bucket)</span></label>
         <div class="seg" id="grainButtons">
-          <button type="button" class="chip active" data-grain="day">Day</button>
-          <button type="button" class="chip" data-grain="week">Week</button>
-          <button type="button" class="chip" data-grain="month">Month</button>
+          <button type="button" class="chip active" data-grain="day" title="One point / row per calendar day (UTC)">Day</button>
+          <button type="button" class="chip" data-grain="week" title="One point / row per week, Monday to Sunday (UTC)">Week</button>
+          <button type="button" class="chip" data-grain="month" title="One point / row per calendar month (UTC)">Month</button>
         </div>
+        <div class="hint grain-hint" id="grainHint"></div>
       </div>
     </div>
 
@@ -369,6 +373,6 @@
   </footer>
 </div>
 <script src="wizard.js?v=2"></script>
-<script src="dashboard.js?v=3"></script>
+<script src="dashboard.js?v=4"></script>
 </body>
 </html>

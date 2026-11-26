@@ -245,7 +245,7 @@ body.pbi #viewerAppInfo .v { font-family: inherit; font-size: 12px; font-weight:
 /* Controls */
 body.pbi label { text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 4px; }
 body.pbi label.checkbox { font-weight: 400; color: var(--text); font-size: 13px; margin: 0; }
-body.pbi .controls { margin-top: 0; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px 32px; flex-wrap: wrap; }
+body.pbi .controls { margin-top: 0; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px 32px; flex-wrap: wrap; }
 body.pbi .controls > div:first-child { width: 360px; max-width: 100%; }
 body.pbi select, body.pbi input[type=text], body.pbi input[type=number], body.pbi input[type=date] {
   background: #fff; color: var(--text); border: 1px solid #c8c6c4; border-radius: 2px; height: 32px; padding: 0 10px; font-size: 13px;
@@ -331,3 +331,50 @@ body.pbi .share-fill { background: var(--accent); border-radius: 0; }
 body.pbi .portal-link { color: var(--accent); }
 body.pbi .summary { background: #fff; }
 @media (max-width: 1100px) { body.pbi .kpis-ops { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* Header actions (theme toggle + back) */
+.head-actions { display: flex; gap: 8px; align-items: center; }
+.grain-hint { max-width: 520px; margin-top: 6px; }
+body.pbi .grain-hint { font-size: 12px; }
+
+/* ==========================================================================
+   Dark variant of the report theme (body.pbi.dark), toggled from the header.
+   ========================================================================== */
+body.pbi.dark {
+  --bg: #11151b; --panel: #1b2028; --border: #2f3742; --text: #e8eaed; --muted: #9aa4b0;
+  --accent: #3aa0ff; --good: #54c45e; --bad: #ff6b6b; --warn: #e3b341;
+  --c-in: #7C8CFF; --c-out: #FF9A62;
+  color-scheme: dark;
+}
+body.pbi.dark .viewer-head, body.pbi.dark .block, body.pbi.dark .card, body.pbi.dark .kpi,
+body.pbi.dark button.kpi-series, body.pbi.dark details.advanced, body.pbi.dark .checklist, body.pbi.dark .summary { background: var(--panel); }
+body.pbi.dark .viewer-head { border-color: var(--border); border-left-color: var(--accent); }
+body.pbi.dark .block, body.pbi.dark .card, body.pbi.dark .kpi { box-shadow: none; }
+body.pbi.dark select, body.pbi.dark input[type=text], body.pbi.dark input[type=number], body.pbi.dark input[type=date] {
+  background: var(--bg); color: var(--text); border-color: #3b4452;
+}
+body.pbi.dark select:hover, body.pbi.dark input:hover { border-color: #5a6574; }
+body.pbi.dark input[type=date] { color-scheme: dark; }
+body.pbi.dark input[type=date]::-webkit-calendar-picker-indicator { filter: invert(0.85); }
+body.pbi.dark button.secondary, body.pbi.dark button.chip, body.pbi.dark button.legend-item { background: var(--panel); border-color: #3b4452; color: var(--text); }
+body.pbi.dark button.secondary:hover:not(:disabled), body.pbi.dark button.chip:hover, body.pbi.dark button.legend-item:hover { background: #262d38; border-color: #5a6574; }
+body.pbi.dark button.chip.active { background: var(--accent); border-color: var(--accent); color: #06121f; }
+body.pbi.dark button.primary { color: #06121f; }
+body.pbi.dark button.kpi-series:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.5); }
+body.pbi.dark .linechart .grid { stroke: #2a313b; }
+body.pbi.dark .linechart .guide { stroke: #6b7684; }
+body.pbi.dark .tip { background: #232a34; border-color: #3b4452; box-shadow: 0 6px 20px rgba(0,0,0,0.6); }
+body.pbi.dark .top-bar, body.pbi.dark .share-bar { background: #2a313b; }
+body.pbi.dark button.top-row:hover { background: #232a34; }
+body.pbi.dark .top-row.selected { background: rgba(58,160,255,0.16); border-color: var(--accent); }
+body.pbi.dark .treewrap { border-color: var(--border); }
+body.pbi.dark table.csv th, body.pbi.dark table.csv td { border-bottom-color: #262d38; }
+body.pbi.dark table.csv th, body.pbi.dark table.csv.tree-table thead th { background: #161b22; border-bottom-color: #3b4452; }
+body.pbi.dark table.csv tbody tr:hover td { background: #232a34; }
+body.pbi.dark table.tree-table tr.lvl-tenant td { background: #1c3550; }
+body.pbi.dark table.tree-table tr.lvl-subscription td { background: #182a3d; }
+body.pbi.dark table.tree-table tr.lvl-resource-group td { background: transparent; }
+body.pbi.dark table.tree-table tbody tr:hover td { background: #243447; }
+body.pbi.dark .badge { background: var(--panel); border-color: #3b4452; }
+body.pbi.dark .lvl-tag { color: #7d8896; }
+body.pbi.dark .status.err { background: rgba(255,107,107,0.12); }
